@@ -1,6 +1,6 @@
 """Schema front end: text -> typed AST."""
-from dataclasses import dataclass
-from lark import Lark, Transformer
+from dataclasses import dataclass, field as dc_field
+from lark import Lark, Transformer, v_args
 
 GRAMMAR = r"""
 start: decl*
@@ -46,33 +46,45 @@ class Field:
     name: str
     type: Type
     size_of: str | None = None
+    line: int = dc_field(default=0, repr=False, compare=False)
 
 @dataclass
 class Arm:
     tags: list[str]
     type: Type
+    line: int = dc_field(default=0, repr=False, compare=False)
 
 @dataclass
 class Switch:
     name: str
     tag: str
     arms: list[Arm]
+    line: int = dc_field(default=0, repr=False, compare=False)
 
 @dataclass
 class Pad:
     align: int
+    line: int = dc_field(default=0, repr=False, compare=False)
+
+@dataclass
+class Variant:
+    name: str
+    value: int
+    line: int = dc_field(default=0, repr=False, compare=False)
 
 @dataclass
 class Enum:
     name: str
     base: str
-    variants: dict[str, int]
+    variants: list[Variant]
+    line: int = dc_field(default=0, repr=False, compare=False)
 
 @dataclass
 class Struct:
     name: str
     is_message: bool
     fields: list
+    line: int = dc_field(default=0, repr=False, compare=False)
 
 @dataclass
 class Schema:
@@ -87,18 +99,25 @@ class ToAst(Transformer):
     def WILD(self, t): return "_"
     def protocol(self, c): return ("protocol", c[0])
     def endian(self, c): return ("endian", str(c[0]))
-    def variant(self, c): return (c[0], c[1])
-    def variants(self, c): return dict(c)
-    def enum(self, c): return Enum(c[0], c[1], c[2])
-    def struct(self, c): return Struct(c[1], str(c[0]) == "message", c[2:])
+    @v_args(meta=True)
+    def variant(self, m, c): return Variant(c[0], c[1], m.line)
+    def variants(self, c): return c
+    @v_args(meta=True)
+    def enum(self, m, c): return Enum(c[0], c[1], c[2], m.line)
+    @v_args(meta=True)
+    def struct(self, m, c): return Struct(c[1], str(c[0]) == "message", c[2:], m.line)
     def scalar(self, c): return Type(c[0])
     def fixed_array(self, c): return Type(c[0], c[1], True)
     def sized_array(self, c): return Type(c[0], c[1], True)
     def rest_array(self, c): return Type(c[0], "..", True)
-    def field(self, c): return Field(c[0], c[1], c[2] if len(c) > 2 else None)
-    def arm(self, c): return Arm(c[:-1], c[-1])
-    def switch(self, c): return Switch(c[0], c[1], c[2:])
-    def pad(self, c): return Pad(c[0])
+    @v_args(meta=True)
+    def field(self, m, c): return Field(c[0], c[1], c[2] if len(c) > 2 else None, m.line)
+    @v_args(meta=True)
+    def arm(self, m, c): return Arm(c[:-1], c[-1], m.line)
+    @v_args(meta=True)
+    def switch(self, m, c): return Switch(c[0], c[1], c[2:], m.line)
+    @v_args(meta=True)
+    def pad(self, m, c): return Pad(c[0], m.line)
     def start(self, decls):
         s = Schema("", "big", [], [])
         for d in decls:

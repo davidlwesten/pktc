@@ -141,15 +141,34 @@ depends on nothing.
    dataclasses. `python3 schema.py FILE` prints the AST. Lark can later emit
    a standalone parser (`python -m lark.tools.standalone`) to drop the
    dependency.
-2. **Check (next):**
-   - every type name resolves;
-   - a switch tag is an earlier field of enum type, and each arm's tags are
-     variants of that enum with no duplicates;
-   - a length field comes before the array it sizes, and a `= sizeof(x)`
-     target exists and is that array;
-   - `[..]` must be last, and a struct containing `[..]` must itself be last
-     wherever it is used;
-   - bitfields fill whole bytes.
+2. **Check (done):** `check.py`, `python3 check.py FILE`. It collects every
+   error with its line number instead of stopping at the first. After it
+   passes, later stages may assume a well-formed schema. Tests:
+   `python3 -m unittest discover tests`.
+   - Declarations: a `protocol` and at least one `message`; names unique
+     and not built-in; `endian little` is rejected (not supported).
+   - Enums: base is u8/u16/u32; variant names and values unique; values
+     fit the base.
+   - Types: every name resolves; a `message` is never used as a type;
+     no struct contains itself, directly or indirectly; empty structs are
+     rejected for now.
+   - Arrays: elements are u8/u16/u32, or a struct only in `S[..]` (a list),
+     and that struct must not itself run to the end of the message.
+   - Length fields go both ways: `d: u8[n]` needs an earlier
+     `n: u8|u16|u32 = sizeof(d)`, and `sizeof(d)` needs `d` sized by `n`.
+     So encode always knows to compute `n` and decode always knows where
+     `d` ends.
+   - Anything that runs to the end of the message must be last: a `[..]`
+     field, a field of a struct that ends that way, or a switch with such
+     an arm (including `_`).
+   - Switches: the tag is an earlier field of enum type; arm tags are
+     variants of it and appear once; arm types are structs; `_` stands
+     alone, is the last arm and has type `u8[..]`.
+   - C names: field names are not C keywords; distinct schema names stay
+     distinct after snake_casing, and don't take names the generated code
+     uses itself (`<proto>_status`, `_cstr`, `_bytes`, `_rd`, `_wr`,
+     `<S>_list`, `<S>_iter`, `body.unknown`, enum constants).
+   - Not yet: bitfields filling whole bytes (bitfields are not designed).
 3. **Lower to an IR:** a flat list of wire operations per struct (read u16 BE,
    read cstr, read u8 array sized by field `len`, pad to 4, dispatch on
    `opcode`), with fixed offsets computed where possible. Decode, encode and
@@ -172,7 +191,7 @@ depends on nothing.
    emitter's target output; `test_tftp.c` holds the round-trip and edge-case
    tests; `fuzz_tftp.c` is the libFuzzer harness (build command in its
    header comment).
-2. Write the checker.
+2. ~~Write the checker.~~ Done: `check.py`, tests in `tests/test_check.py`.
 3. Write the IR and C emitter, and make it reproduce the hand-written TFTP
    code.
 4. Add PCP: bitfields, fixed arrays, length fields, padding and the `_`
