@@ -83,6 +83,5 @@ struct Option {
     code: OptionCode;
     _: u8;
     len: u16;
-    data: u8[len];
-    pad(4);
+    data: u8[len] pad 4;
 }

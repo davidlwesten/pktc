@@ -42,7 +42,22 @@ class Valid(unittest.TestCase):
                 body: switch (op) { MAP => Map, _ => u8[..], };
             }
             struct Map { nonce: u8[12]; port: u16; options: Opt[..]; }
-            struct Opt { code: u8; reserved: u8; len: u16; data: u8[len]; pad(4); }
+            struct Opt { code: u8; reserved: u8; len: u16; data: u8[len] pad 4; }
+        """), [])
+
+    def test_stun_like(self):
+        self.assertEqual(errors(HEADER + """
+            message M { zero: u2 = 0; type: u14; len: u16; attrs: Attr[len]; }
+            struct Attr { type: u16; len: u16; value: u8[len] pad 4; }
+        """), [])
+
+    def test_signed(self):
+        self.assertEqual(errors(HEADER + "message M { a: i8; b: i3; c: u5; d: i32; }"), [])
+
+    def test_sized_list_not_last(self):
+        self.assertEqual(errors(HEADER + """
+            message M { n: u8; items: S[n]; after: u8; }
+            struct S { a: u8; }
         """), [])
 
     def test_open_struct_last_in_struct_last(self):
@@ -108,7 +123,16 @@ class Invalid(unittest.TestCase):
         self.assertError(HEADER + "message M { a: u8; } struct S { }", "empty")
 
     def test_zero_pad(self):
-        self.assertError(HEADER + "message M { a: u8; pad(0); }", "pad(0)")
+        self.assertError(HEADER + "message M { n: u8; a: u8[n] pad 0; }", "pad 0")
+
+    def test_pad_not_sized(self):
+        for t in ("u8[..]", "u8[4]", "u16", "cstr"):
+            self.assertError(HEADER + f"message M {{ a: u8; b: {t} pad 4; }}",
+                             "only a u8[len] field can be padded")
+
+    def test_pad_sized_list(self):
+        self.assertError(HEADER + "message M { n: u8; a: S[n] pad 4; } struct S { b: u8; }",
+                         "only a u8[len] field can be padded")
 
     # arrays
     def test_zero_length_array(self):
@@ -119,7 +143,19 @@ class Invalid(unittest.TestCase):
 
     def test_fixed_array_of_structs(self):
         self.assertError(HEADER + "message M { a: S[3]; } struct S { b: u8; }",
-                         "must be 'S[..]'")
+                         "must be 'S[..]' or sized")
+
+    def test_open_sized_list_element(self):
+        self.assertError(HEADER + "message M { n: u8; a: S[n]; } struct S { b: u8[..]; }",
+                         "cannot be a list element")
+
+    def test_sized_list_length_field_later(self):
+        self.assertError(HEADER + "message M { a: S[n]; n: u8; } struct S { b: u8; }",
+                         "declared earlier")
+
+    def test_sized_list_c_name_collision(self):
+        self.assertError(HEADER + "message M { n: u8; a: S[n]; } struct S { b: u8; }"
+                         " struct SList { c: u8; }", "<proto>_s_list")
 
     def test_open_list_element(self):
         self.assertError(HEADER + "message M { a: S[..]; } struct S { b: u8[..]; }",
@@ -132,18 +168,19 @@ class Invalid(unittest.TestCase):
         self.assertError(HEADER + "message M { t: T; b: u8; } struct T { r: u8[..]; }",
                          "runs to the end")
 
-    def test_pad_after_rest(self):
-        self.assertError(HEADER + "message M { a: u8[..]; pad(4); }", "must be the last")
 
     # length fields
     def test_length_field_later(self):
         self.assertError(HEADER + "message M { d: u8[n]; n: u8; }", "declared earlier")
 
     def test_length_field_not_int(self):
-        self.assertError(HEADER + "message M { n: cstr; d: u8[n]; }", "must be an integer")
+        self.assertError(HEADER + "message M { n: cstr; d: u8[n]; }", "must be an unsigned")
 
     def test_length_field_array(self):
-        self.assertError(HEADER + "message M { n: u8[2]; d: u8[n]; }", "must be an integer")
+        self.assertError(HEADER + "message M { n: u8[2]; d: u8[n]; }", "must be an unsigned")
+
+    def test_length_field_signed(self):
+        self.assertError(HEADER + "message M { n: i8; d: u8[n]; }", "must be an unsigned")
 
     def test_length_field_sizes_two_arrays(self):
         self.assertError(HEADER + "message M { n: u8; a: u8[n]; b: u8[n]; }",
@@ -257,7 +294,23 @@ class Invalid(unittest.TestCase):
         self.assertError(HEADER + "message M { a: u8; r: u1 = 2; _: u7; }", "does not fit in u1")
 
     def test_const_not_int(self):
-        self.assertError(HEADER + "message M { a: u8; c: cstr = 1; }", "only an integer field")
+        self.assertError(HEADER + "message M { a: u8; c: cstr = 1; }", "only an unsigned integer field")
+
+    def test_const_signed(self):
+        self.assertError(HEADER + "message M { a: u8; c: i8 = 1; }",
+                         "only an unsigned integer field")
+
+    def test_reserved_signed(self):
+        self.assertError(HEADER + "message M { a: u8; _: i8; }", "reserved field must be")
+
+    def test_signed_enum_base(self):
+        self.assertError(HEADER + "enum E : i8 { A = 1 } message M { e: E; }", "base type")
+
+    def test_signed_array(self):
+        self.assertError(HEADER + "message M { a: i8[4]; }", "array elements must be")
+
+    def test_signed_builtin_name(self):
+        self.assertError(HEADER + "message M { a: u8; } struct i16 { b: u8; }", "built-in")
 
     def test_reserved_not_int(self):
         self.assertError(HEADER + "message M { a: u8; _: cstr; }", "reserved field must be")
@@ -309,8 +362,12 @@ class Bounds(unittest.TestCase):
                          (9, 9))
 
     def test_sized_and_pad(self):
-        b = self.bounds("message M { c: u8; n: u8; d: u8[n]; pad(4); }")
-        self.assertEqual(b["M"], (4, 260))  # 2 + 255 = 257, rounded up to 260
+        b = self.bounds("message M { c: u8; n: u8; d: u8[n] pad 4; }")
+        self.assertEqual(b["M"], (2, 258))  # 2 + 255 rounded up to 256
+
+    def test_sized_list(self):
+        b = self.bounds("message M { n: u16; s: S[n]; } struct S { a: u32; }")
+        self.assertEqual(b["M"], (2, 2 + 0xffff))
 
     def test_switch(self):
         b = self.bounds("""enum K : u8 { A = 1, B = 2 }

@@ -2,8 +2,8 @@
 import re
 from string import Template
 
-from ir import (Proto, StructDecl, EnumDecl, Group, Bits, Cstr, Rest, Bytes, Fixed, Pad,
-                Sub, List, Dispatch)
+from ir import (Proto, StructDecl, EnumDecl, Group, Bits, Cstr, Rest, Bytes, Fixed, Sub,
+                List, Dispatch, render_int)
 
 WIDTH = 79
 
@@ -11,6 +11,11 @@ WIDTH = 79
 def c_uint(bits: int) -> str:
     """Smallest uintN_t holding `bits` bits."""
     return "uint8_t" if bits <= 8 else "uint16_t" if bits <= 16 else "uint32_t"
+
+
+def c_int(bits: int) -> str:
+    """Smallest intN_t holding `bits` bits."""
+    return c_uint(bits)[1:]
 
 
 def c_bits(bits: int) -> int:
@@ -149,6 +154,8 @@ class Emitter:
     def member_type(self, op) -> str:
         p = self.p
         match op:
+            case Bits(signed=True):
+                return c_int(op.width)
             case Bits(enum=None):
                 return c_uint(op.width)
             case Bits():
@@ -177,7 +184,7 @@ class Emitter:
                         if b.field in tags:
                             line += f"  /* selects {tags[b.field]} */"
                         out.append(line)
-                case Fixed(field=None) | Pad():
+                case Fixed(field=None):
                     pass
                 case Fixed():
                     out.append(f"    {c_uint(8 * op.elem)} {op.field}[{op.count}];")
@@ -261,19 +268,18 @@ class Emitter:
 
     def c_struct(self, st: StructDecl) -> str:
         p, P, s = self.p, self.P, f"{self.p}_{st.name}"
-        has_pad = any(isinstance(op, Pad) for op in st.ops)
         out = []
         for op in st.ops:
             if isinstance(op, Dispatch):
                 out.append(self.c_dispatch(st, op))
 
-        lines = ["    const uint8_t *start = r->p;"] if has_pad else []
+        lines = []
         for i, op in enumerate(st.ops):
             lines += self.read(op, st, f"bits{i}")
         out += [sig(f"static bool {s}_read", [f"struct {p}_rd *r", f"struct {s} *out"], " {"),
                 *finish(lines, f"{P}_CHECK", "    return true;"), "}", ""]
 
-        lines = ["    uint8_t *start = w->p;"] if has_pad else []
+        lines = []
         for op in st.ops:
             lines += self.write(op, st)
         out += [sig(f"static {p}_status {s}_write",
@@ -299,7 +305,10 @@ class Emitter:
             case Rest():
                 return [f"{C}({p}_rd_rest(r, &out->{op.field}));"]
             case Bytes():
-                return [f"{C}({p}_rd_bytes(r, &out->{op.field}, {op.field}_len));"]
+                lines = [f"{C}({p}_rd_bytes(r, &out->{op.field}, {op.field}_len));"]
+                if op.pad > 1:
+                    lines.append(f"{C}({p}_rd_skip(r, {p}_pad_len({op.field}_len, {op.pad})));")
+                return lines
             case Fixed(field=None):
                 return [f"{C}({p}_rd_skip(r, {op.elem * op.count}));"]
             case Fixed(elem=1):
@@ -307,10 +316,13 @@ class Emitter:
             case Fixed():
                 return [f"    for (size_t i = 0; i < {op.count}; i++)",
                         f"    {C}({p}_rd_u{8 * op.elem}(r, &out->{op.field}[i]));"]
-            case Pad():
-                return [f"{C}({p}_rd_skip(r, {p}_pad_len((size_t)(r->p - start), {op.align})));"]
             case Sub():
                 return [f"{C}({p}_{op.struct}_read(r, &out->{op.field}));"]
+            case List(sized=True):
+                sub = f"{op.field}_r"
+                return [f"    struct {p}_rd {sub};",
+                        f"{C}({p}_rd_sub(r, &{sub}, {op.field}_len));",
+                        f"{C}({p}_{op.elem}_list_read(&{sub}, &out->{op.field}));"]
             case List():
                 return [f"{C}({p}_{op.elem}_list_read(r, &out->{op.field}));"]
             case Dispatch():
@@ -322,7 +334,7 @@ class Emitter:
         total, rd = 8 * g.size, f"{p}_rd_u{8 * g.size}"
         if all(b.field is None and b.const is None and b.length_of is None for b in g.bits):
             return [f"{C}({p}_rd_skip(r, {g.size}));"]
-        if len(g.bits) == 1 and g.bits[0].field is not None:
+        if len(g.bits) == 1 and g.bits[0].field is not None and not g.bits[0].signed:
             return [f"{C}({rd}(r, &out->{g.bits[0].field}));"]
         if len(g.bits) == 1 and g.bits[0].length_of is not None:
             n = f"{g.bits[0].length_of}_len"
@@ -336,24 +348,32 @@ class Emitter:
                 e = f"({shifted}) & {hex((1 << b.width) - 1)}"
             else:
                 e = f"{local} & {hex((1 << b.width) - 1)}"
-            if b.field is not None:
+            if b.signed:
+                lines.append(f"    out->{b.field} = ({self.member_type(b)}){p}_sext({e}, "
+                             f"{b.width});")
+            elif b.field is not None:
                 lines.append(f"    out->{b.field} = ({self.member_type(b)})({e});")
             elif b.length_of is not None:
                 t = c_uint(b.width)
                 lines.append(f"    {t} {b.length_of}_len = ({t})({e});")
             elif b.const is not None:
-                lines.append(f"{C}({e if e == local else f'({e})'} == {b.const});")
+                lines.append(f"{C}({e if e == local else f'({e})'} == "
+                             f"{render_int(b.const)});")
         return lines
 
     def write(self, op, st: StructDecl) -> list[str]:
         p, T = self.p, f"    {self.P}_TRY"
         match op:
             case Group():
-                return self.write_group(op)
+                return self.write_group(op, st)
             case Cstr():
                 return [f"{T}({p}_wr_cstr(w, &in->{op.field}));"]
             case Rest() | Bytes():
-                return [f"{T}({p}_wr_raw(w, in->{op.field}.ptr, in->{op.field}.len));"]
+                v = f"in->{op.field}"
+                lines = [f"{T}({p}_wr_raw(w, {v}.ptr, {v}.len));"]
+                if isinstance(op, Bytes) and op.pad > 1:
+                    lines.append(f"{T}({p}_wr_zero(w, {p}_pad_len({v}.len, {op.pad})));")
+                return lines
             case Fixed(field=None):
                 return [f"{T}({p}_wr_zero(w, {op.elem * op.count}));"]
             case Fixed(elem=1):
@@ -361,8 +381,6 @@ class Emitter:
             case Fixed():
                 return [f"    for (size_t i = 0; i < {op.count}; i++)",
                         f"    {T}({p}_wr_u{8 * op.elem}(w, in->{op.field}[i]));"]
-            case Pad():
-                return [f"{T}({p}_wr_zero(w, {p}_pad_len((size_t)(w->p - start), {op.align})));"]
             case Sub():
                 return [f"{T}({p}_{op.struct}_write(w, &in->{op.field}));"]
             case List():
@@ -371,70 +389,75 @@ class Emitter:
                 return [f"{T}({p}_{st.name}_{op.field}_write(w, in));"]
         raise AssertionError(op)
 
-    def write_group(self, g: Group) -> list[str]:
+    def write_group(self, g: Group, st: StructDecl) -> list[str]:
         p, P, T = self.p, self.P, f"    {self.P}_TRY"
         total, wr, ct = 8 * g.size, f"{p}_wr_u{8 * g.size}", c_uint(8 * g.size)
         if all(b.field is None and b.const is None and b.length_of is None for b in g.bits):
             return [f"{T}({p}_wr_zero(w, {g.size}));"]
-        if len(g.bits) == 1 and g.bits[0].field is not None:
-            return [f"{T}({wr}(w, in->{g.bits[0].field}));"]
+        b = g.bits[0]
+        if len(g.bits) == 1 and b.field is not None and b.width == c_bits(b.width):
+            cast = f"({ct})" if b.signed else ""  # two's complement: well defined
+            return [f"{T}({wr}(w, {cast}in->{b.field}));"]
+        lists = {op.field: op for op in st.ops if isinstance(op, List)}
         lines, terms = [], []
         const = sum(b.const << b.shift for b in g.bits if b.const is not None)
         if const:
             terms.append(hex(const))
         for b in g.bits:
+            mask = hex((1 << b.width) - 1)
             if b.field is not None:
                 value = f"in->{b.field}"
                 fits = b.width == c_bits(b.width)  # the C type cannot hold too large a value
+            elif b.length_of in lists:
+                value = f"{b.length_of}_len"
+                lines.append(f"    size_t {value} = "
+                             f"{p}_{lists[b.length_of].elem}_list_size(&in->{b.length_of});")
+                fits = False
             elif b.length_of is not None:
                 value = f"in->{b.length_of}.len"
                 fits = False  # size_t
             else:
                 continue
-            if not fits:
-                lines += [f"    if ({value} > {hex((1 << b.width) - 1)})",
+            if b.signed:
+                if not fits:
+                    lo = 1 << (b.width - 1)
+                    lines += [f"    if ({value} < -{lo} || {value} > {lo - 1})",
+                              f"        return {P}_INVALID;"]
+                if b.shift + b.width != total:  # bits above: drop the sign extension
+                    value = f"(({ct}){value} & {mask})"
+            elif not fits:
+                lines += [f"    if ({value} > {mask})",
                           f"        return {P}_INVALID;"]
             terms.append(f"(({ct}){value} << {b.shift})" if b.shift else value)
         lines.append(join_wrapped(f"{T}({wr}(w, ({ct})(", terms or ["0"], " | ", ")));"))
         return lines
 
-    def size(self, op, st: StructDecl) -> int | str:
+    def size(self, op, st: StructDecl) -> list[int | str]:
         p = self.p
         match op:
             case Group():
-                return op.size
+                return [op.size]
             case Fixed():
-                return op.elem * op.count
+                return [op.elem * op.count]
             case Cstr():
-                return f"{p}_cstr_size(&in->{op.field})"
+                return [f"{p}_cstr_size(&in->{op.field})"]
+            case Bytes() if op.pad > 1:
+                n = f"in->{op.field}.len"
+                return [n, f"{p}_pad_len({n}, {op.pad})"]
             case Rest() | Bytes():
-                return f"in->{op.field}.len"
+                return [f"in->{op.field}.len"]
             case Sub():
-                return f"{p}_{op.struct}_size(&in->{op.field})"
+                return [f"{p}_{op.struct}_size(&in->{op.field})"]
             case List():
-                return f"{p}_{op.elem}_list_size(&in->{op.field})"
+                return [f"{p}_{op.elem}_list_size(&in->{op.field})"]
             case Dispatch():
-                return f"{p}_{st.name}_{op.field}_size(in)"
+                return [f"{p}_{st.name}_{op.field}_size(in)"]
         raise AssertionError(op)
 
     def size_body(self, st: StructDecl) -> list[str]:
-        """Sum the field sizes; at each pad(), round the running total up."""
-        lines, terms, have_n = [], [], False
-        for op in st.ops:
-            if not isinstance(op, Pad):
-                terms.append(self.size(op, st))
-                continue
-            if not have_n:
-                lines.append(sum_expr("    size_t n = ", fold(terms) or ["0"], ";"))
-                have_n = True
-            elif terms:
-                lines.append(sum_expr("    n += ", fold(terms), ";"))
-            lines.append(f"    n += {self.p}_pad_len(n, {op.align});")
-            terms = []
-        if have_n:
-            return lines + [sum_expr("    return ", ["n", *fold(terms)], ";")]
-        if all(isinstance(t, int) for t in terms):
-            lines.append("    (void)in;")
+        """Sum the field sizes, constants first."""
+        terms = [t for op in st.ops for t in self.size(op, st)]
+        lines = ["    (void)in;"] if all(isinstance(t, int) for t in terms) else []
         return lines + [sum_expr("    return ", fold(terms) or ["0"], ";")]
 
     # ---- switch, list and message functions ------------------------------------
@@ -611,7 +634,9 @@ class FuzzEmitter(Emitter):
             seen.add(s.name)
             for op in s.ops:
                 match op:
-                    case Pad() | Fixed(field=None):
+                    case Fixed(field=None):
+                        return False
+                    case Bytes() if op.pad > 1:
                         return False
                     case Group() if any(b.field is None and b.const is None and
                                         b.length_of is None for b in op.bits):
@@ -673,8 +698,12 @@ class FuzzEmitter(Emitter):
             match op:
                 case Group():
                     for b in op.bits:
-                        if b.field is not None:
-                            mask = hex((1 << b.width) - 1)
+                        mask = hex((1 << b.width) - 1)
+                        if b.signed:  # -2^(w-1) .. 2^(w-1) - 1
+                            body.append(f"    v->{b.field} = ({self.member_type(b)})"
+                                        f"((int64_t)(take_u32(in) & {mask}) - "
+                                        f"{1 << (b.width - 1)});")
+                        elif b.field is not None:
                             body.append(f"    v->{b.field} = ({self.member_type(b)})"
                                         f"(take_u32(in) & {mask});")
                 case Fixed(field=None):
@@ -738,7 +767,7 @@ class FuzzEmitter(Emitter):
     def encode_message(self, st: StructDecl) -> list[str]:
         p, P, m = self.p, self.P, f"{self.p}_{st.name}"
         over_max = []
-        if st.max_declared:
+        if st.max_size is not None:  # a length field overflowed, or over a declared max
             over_max = [f"    if (size > {P}_{st.name.upper()}_MAX_SIZE) {{",
                         f"        if ({m}_encode(&msg, NULL, 0, &n) != {P}_INVALID)",
                         "            abort();",
@@ -1010,6 +1039,17 @@ static bool ${p}_rd_cstr(struct ${p}_rd *r, struct ${p}_cstr *v) {
     return true;
 }
 """),
+    ("rd_sub", """\
+/* Splits the next n bytes off r into sub. */
+static bool ${p}_rd_sub(struct ${p}_rd *r, struct ${p}_rd *sub, size_t n) {
+    if (${p}_rd_left(r) < n)
+        return false;
+    sub->p = r->p;
+    sub->end = r->p + n;
+    r->p += n;
+    return true;
+}
+"""),
     ("rd_rest", """\
 static bool ${p}_rd_rest(struct ${p}_rd *r, struct ${p}_bytes *v) {
     v->ptr = r->p;
@@ -1112,8 +1152,16 @@ static size_t ${p}_cstr_size(const struct ${p}_cstr *v) {
     return v->len + 1;
 }
 """),
+    ("sext", """\
+/* The low `bits` bits of v as a two's complement integer. */
+static int32_t ${p}_sext(uint32_t v, unsigned bits) {
+    uint32_t sign = (uint32_t)1 << (bits - 1);
+    uint32_t mask = sign * 2 - 1;  /* wraps to all ones for 32 bits */
+    return (v & sign) != 0 ? -(int32_t)(~v & mask) - 1 : (int32_t)(v & mask);
+}
+"""),
     ("pad_len", """\
-/* Bytes needed after offset n to reach a multiple of align. */
+/* Zero bytes that pad n bytes to a multiple of align. */
 static size_t ${p}_pad_len(size_t n, size_t align) {
     return (align - n % align) % align;
 }

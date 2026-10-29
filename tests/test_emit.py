@@ -129,8 +129,9 @@ int main(void) {
 
 
 # Covers what PCP does not: a 16-bit group holding a constant, a 3-bit enum,
-# a 6-bit length and 3-bit flags (all at different shifts), a u24 member, a
-# u16 array, a reserved array, pad() mid-message, and a computed MAX_SIZE.
+# a 6-bit length and 3-bit flags (all at different shifts), a u24 member,
+# signed fields (a whole i8, and an i12 with bits below it), a u16 array, a
+# reserved array, padding mid-message, and a computed MAX_SIZE.
 BITS = """
 protocol bits;
 
@@ -142,10 +143,12 @@ message Rec {
     n: u6;
     flags: u3;
     id: u24;
+    temp: i8;
+    off: i12;
+    k: u4;
     words: u16[3];
     _: u8[2];
-    data: u8[n];
-    pad(8);
+    data: u8[n] pad 8;
     last: u32;
 }
 """
@@ -158,18 +161,21 @@ BITS_TEST = r"""
 static int fails;
 #define CHECK(c) do { if (!(c)) { printf("line %d: %s\n", __LINE__, #c); fails++; } } while (0)
 
-static_assert(BITS_REC_MIN_SIZE == 20);  /* 13 + no data, padded to 16, + 4 */
-static_assert(BITS_REC_MAX_SIZE == 84);  /* 13 + 63, padded to 80, + 4 */
+static_assert(BITS_REC_MIN_SIZE == 20);  /* 16 + no data + 4 */
+static_assert(BITS_REC_MAX_SIZE == 84);  /* 16 + 63 padded to 64 + 4 */
 
 int main(void) {
     /* 9 << 12 | ON << 9 | 5 << 3 | 6 == 0x9a2e */
     static const uint8_t rec[] = {
-        0x9a, 0x2e, 0x12, 0x34, 0x56, 0x01, 0x02, 0x03, 0x04, 0xff, 0xfe, 0, 0,
-        'a', 'b', 'c', 'd', 'e', 0, 0, 0, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef,
+        0x9a, 0x2e, 0x12, 0x34, 0x56,
+        0xfd, 0xff, 0xe5,  /* temp -3, off -2, k 5 */
+        0x01, 0x02, 0x03, 0x04, 0xff, 0xfe, 0, 0,
+        'a', 'b', 'c', 'd', 'e', 0, 0, 0, 0xde, 0xad, 0xbe, 0xef,
     };
     struct bits_rec r;
     CHECK(bits_rec_decode(&r, rec, sizeof rec) == BITS_OK);
     CHECK(r.mode == BITS_MODE_ON && r.flags == 6 && r.id == 0x123456);
+    CHECK(r.temp == -3 && r.off == -2 && r.k == 5);
     CHECK(r.words[0] == 0x0102 && r.words[2] == 0xfffe);
     CHECK(r.data.len == 5 && memcmp(r.data.ptr, "abcde", 5) == 0);
     CHECK(r.last == 0xdeadbeef);
@@ -192,6 +198,20 @@ int main(void) {
     r.flags = 8;  /* too wide for u3 */
     CHECK(bits_rec_encode(&r, out, sizeof out, &n) == BITS_INVALID);
     r.flags = 0;
+    r.id = 0x1000000;  /* too wide for u24 */
+    CHECK(bits_rec_encode(&r, out, sizeof out, &n) == BITS_INVALID);
+    r.id = 0;
+    r.off = 2048;  /* too wide for i12 */
+    CHECK(bits_rec_encode(&r, out, sizeof out, &n) == BITS_INVALID);
+    r.off = -2049;
+    CHECK(bits_rec_encode(&r, out, sizeof out, &n) == BITS_INVALID);
+    r.off = -2048;
+    r.temp = -128;
+    CHECK(bits_rec_encode(&r, out, sizeof out, &n) == BITS_OK);
+    CHECK(out[5] == 0x80 && out[6] == 0x80 && out[7] == 0x05);
+    struct bits_rec back;
+    CHECK(bits_rec_decode(&back, out, n) == BITS_OK);
+    CHECK(back.temp == -128 && back.off == -2048 && back.k == 5);
     static const uint8_t big[64] = { 0 };
     r.data = (struct bits_bytes){ big, sizeof big };  /* too long for the u6 length */
     CHECK(bits_rec_encode(&r, out, sizeof out, &n) == BITS_INVALID);

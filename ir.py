@@ -6,7 +6,7 @@ cannot disagree about the wire format. Names in the IR are already C-ready
 """
 from dataclasses import dataclass
 from check import BYTE_INTS, field_bits, int_bits, is_int_field, size_bounds, snake
-from schema import Schema, Struct, Field, Switch, Pad as PadField, Type
+from schema import Schema, Struct, Field, Switch, Type
 
 
 # ---- ops ------------------------------------------------------------------
@@ -19,8 +19,9 @@ class Bits:
     shift: int                     # from the least significant bit of the group
     field: str | None = None       # stored in the C struct
     enum: str | None = None        # ... with this enum type
+    signed: bool = False           # ... as a two's complement integer
     const: int | None = None       # must equal this; not stored
-    length_of: str | None = None   # holds the length of this u8[] field; not stored
+    length_of: str | None = None   # holds the byte length of this field; not stored
 
 @dataclass
 class Group:
@@ -40,9 +41,11 @@ class Rest:
 
 @dataclass
 class Bytes:
-    """u8[len]: a byte view whose length is an earlier Bits field."""
+    """u8[len]: a byte view whose length is an earlier Bits field,
+    followed by zeros up to a multiple of pad bytes."""
     field: str
     len_width: int
+    pad: int = 1
 
 @dataclass
 class Fixed:
@@ -53,11 +56,6 @@ class Fixed:
     count: int
 
 @dataclass
-class Pad:
-    """Skip to the next multiple of align bytes from the start of the struct."""
-    align: int
-
-@dataclass
 class Sub:
     """A nested struct."""
     field: str
@@ -65,9 +63,11 @@ class Sub:
 
 @dataclass
 class List:
-    """S[..]: structs repeated until the end of the message."""
+    """S[..]: structs repeated until the end of the message.
+    S[len] (sized): structs filling exactly len bytes, an earlier Bits field."""
     field: str
     elem: str
+    sized: bool = False
 
 @dataclass
 class Arm:
@@ -170,12 +170,11 @@ def lower(s: Schema, source: str) -> Proto:
             elif f.name != "_":
                 b.field = f.name
                 b.enum = snake(f.type.name) if f.type.name in enums else None
+                b.signed = f.type.name.startswith("i")
             bits.append(b)
         return Group(total // 8, bits)
 
     def lower_field(st: Struct, f, widths: dict):
-        if isinstance(f, PadField):
-            return Pad(f.align)
         if isinstance(f, Switch):
             return lower_switch(st, f)
         t = f.type
@@ -185,11 +184,11 @@ def lower(s: Schema, source: str) -> Proto:
             return Sub(f.name, snake(t.name))
         if isinstance(t.count, int):
             return Fixed(None if f.name == "_" else f.name, BYTE_INTS[t.name], t.count)
+        if t.name in structs:
+            return List(f.name, snake(t.name), sized=t.count != "..")
         if t.count != "..":
-            return Bytes(f.name, widths[t.count])
-        if t.name == "u8":
-            return Rest(f.name)
-        return List(f.name, snake(t.name))
+            return Bytes(f.name, widths[t.count], f.pad or 1)
+        return Rest(f.name)
 
     def lower_switch(st: Struct, sw: Switch) -> Dispatch:
         tag_field = next(f for f in st.fields if isinstance(f, Field) and f.name == sw.tag)
@@ -235,10 +234,12 @@ def lower(s: Schema, source: str) -> Proto:
 def render_type(t: Type) -> str:
     return f"{t.name}[{t.count}]" if t.is_array else t.name
 
+def render_int(n: int) -> str:
+    return str(n) if n < 256 else hex(n)
+
 def render_field(f) -> str:
-    if isinstance(f, PadField):
-        return f"pad({f.align});"
     if isinstance(f, Switch):
         return f"{f.name}: switch ({f.tag}) {{ ... }};"
-    const = f" = {f.const}" if f.const is not None else ""
-    return f"{f.name}: {render_type(f.type)}{const};"
+    pad = f" pad {f.pad}" if f.pad is not None else ""
+    const = f" = {render_int(f.const)}" if f.const is not None else ""
+    return f"{f.name}: {render_type(f.type)}{pad}{const};"

@@ -59,13 +59,7 @@ struct pcp_bytes {
     size_t len;
 };
 
-/* struct Option {
- *     code: OptionCode;
- *     _: u8;
- *     len: u16;
- *     data: u8[len];
- *     pad(4);
- * } */
+/* struct Option { code: OptionCode; _: u8; len: u16; data: u8[len] pad 4; } */
 struct pcp_option {
     enum pcp_option_code code;
     struct pcp_bytes data;

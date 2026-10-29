@@ -127,7 +127,7 @@ static pcp_status pcp_wr_zero(struct pcp_wr *w, size_t n) {
     return PCP_OK;
 }
 
-/* Bytes needed after offset n to reach a multiple of align. */
+/* Zero bytes that pad n bytes to a multiple of align. */
 static size_t pcp_pad_len(size_t n, size_t align) {
     return (align - n % align) % align;
 }
@@ -148,31 +148,27 @@ static size_t pcp_pad_len(size_t n, size_t align) {
 /* ---- struct Option ------------------------------------------------------ */
 
 static bool pcp_option_read(struct pcp_rd *r, struct pcp_option *out) {
-    const uint8_t *start = r->p;
     PCP_CHECK(pcp_rd_u8(r, &out->code));
     PCP_CHECK(pcp_rd_skip(r, 1));
     uint16_t data_len;
     PCP_CHECK(pcp_rd_u16(r, &data_len));
     PCP_CHECK(pcp_rd_bytes(r, &out->data, data_len));
-    return pcp_rd_skip(r, pcp_pad_len((size_t)(r->p - start), 4));
+    return pcp_rd_skip(r, pcp_pad_len(data_len, 4));
 }
 
 static pcp_status pcp_option_write(struct pcp_wr *w,
                                    const struct pcp_option *in) {
-    uint8_t *start = w->p;
     PCP_TRY(pcp_wr_u8(w, in->code));
     PCP_TRY(pcp_wr_zero(w, 1));
     if (in->data.len > 0xffff)
         return PCP_INVALID;
     PCP_TRY(pcp_wr_u16(w, (uint16_t)(in->data.len)));
     PCP_TRY(pcp_wr_raw(w, in->data.ptr, in->data.len));
-    return pcp_wr_zero(w, pcp_pad_len((size_t)(w->p - start), 4));
+    return pcp_wr_zero(w, pcp_pad_len(in->data.len, 4));
 }
 
 static size_t pcp_option_size(const struct pcp_option *in) {
-    size_t n = 4 + in->data.len;
-    n += pcp_pad_len(n, 4);
-    return n;
+    return 4 + in->data.len + pcp_pad_len(in->data.len, 4);
 }
 
 /* ---- Option[..] --------------------------------------------------------- */

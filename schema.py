@@ -17,9 +17,11 @@ ENDIAN: "big" | "little"
 variants: variant ("," variant)* ","?
 variant: NAME "=" INT
 
-?field: (NAME | WILD) ":" type ("=" INT)? ";"            -> field
+?field: (NAME | WILD) ":" type padding? value? ";"        -> field
       | NAME ":" "switch" "(" NAME ")" "{" arm+ "}" ";" -> switch
-      | "pad" "(" INT ")" ";"                           -> pad
+
+padding: "pad" INT
+value: "=" INT
 
 arm: (NAME | WILD) ("," NAME)* "=>" type ","
 WILD: "_"
@@ -47,6 +49,7 @@ class Field:
     name: str                  # "_" for a reserved field
     type: Type
     const: int | None = None   # `name: type = const;`
+    pad: int | None = None     # `data: u8[len] pad 4;`
     line: int = dc_field(default=0, repr=False, compare=False)
 
 @dataclass
@@ -60,11 +63,6 @@ class Switch:
     name: str
     tag: str
     arms: list[Arm]
-    line: int = dc_field(default=0, repr=False, compare=False)
-
-@dataclass
-class Pad:
-    align: int
     line: int = dc_field(default=0, repr=False, compare=False)
 
 @dataclass
@@ -124,14 +122,14 @@ class ToAst(Transformer):
     def fixed_array(self, c): return Type(c[0], c[1], True)
     def sized_array(self, c): return Type(c[0], c[1], True)
     def rest_array(self, c): return Type(c[0], "..", True)
+    def padding(self, c): return ("pad", c[0])
+    def value(self, c): return ("const", c[0])
     @v_args(meta=True)
-    def field(self, m, c): return Field(c[0], c[1], c[2] if len(c) > 2 else None, m.line)
+    def field(self, m, c): return Field(c[0], c[1], **dict(c[2:]), line=m.line)
     @v_args(meta=True)
     def arm(self, m, c): return Arm(c[:-1], c[-1], m.line)
     @v_args(meta=True)
     def switch(self, m, c): return Switch(c[0], c[1], c[2:], m.line)
-    @v_args(meta=True)
-    def pad(self, m, c): return Pad(c[0], m.line)
     def start(self, decls):
         s = Schema("", "big", [], [])
         for d in decls:
