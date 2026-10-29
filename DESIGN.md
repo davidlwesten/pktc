@@ -58,8 +58,8 @@ See `examples/tftp/tftp.schema` and `tests/syntax.schema`.
 
 ## Generated C
 
-`examples/tftp/tftp_gen.h` is the hand-written target for what the generator
-should emit for TFTP.
+`examples/tftp/tftp_gen.h` and `tftp_gen.c` show what the generator emits
+for TFTP. They started as hand-written targets and are now generated.
 
 - **One C struct per schema struct, and a tagged union per `switch`.** The C
   mirrors the schema directly. Schema arms that share a type share a union
@@ -98,16 +98,21 @@ should emit for TFTP.
   and `NOSPACE` (encode only). Encode returns `INVALID` for input it cannot
   encode (unknown tag, NUL in a `cstr`, hand-filled `raw` list bytes that
   decode would reject), so encode never emits bytes that decode rejects.
-  `_encoded_size` assumes valid input and returns 0 for an unknown tag.
-  `*written` is set only on `OK`. Datagram protocols have no `INCOMPLETE`;
+  `_encoded_size` is exact when encode succeeds; for input encode rejects
+  its result is meaningless. `*written` is set only on `OK`. Datagram protocols have no `INCOMPLETE`;
   a stream protocol would add one that reports how many bytes are still
   needed.
 - **Generated code layout:** two bounds-checked cursors (read and write)
   with primitive helpers (`rd_u16`, `rd_cstr`, `wr_u16`, ...), then one
-  static `_decode`/`_encode`/`_size` triple per schema struct, each calling
-  the helpers or other structs' triples field by field. Only the message
-  functions and list iterators are public. The only library dependency is
-  `<string.h>` (`memchr`, `memcpy`), which C23 freestanding provides.
+  static `_read`/`_write`/`_size` triple per schema struct, each calling
+  the helpers or other structs' triples field by field. A switch gets its
+  own triple, `<struct>_<field>_read` etc., holding the C `switch`. A
+  message's public `_decode`/`_encode`/`_encoded_size` wrap its triple.
+  Only the message functions and list iterators are public. Only the
+  primitives the schema uses are emitted, and only structs reachable from
+  a message, so `-Wunused-function` stays quiet. The only library
+  dependency is `<string.h>` (`memchr`, `memcpy`), which C23 freestanding
+  provides.
 - **Encoding a variable-length payload copies it** into the output buffer.
   Scatter-gather output (header bytes plus pointers for `writev`) and a
   reserve-then-fill API are possible later additions.
@@ -178,17 +183,32 @@ depends on nothing.
      uses itself (`<proto>_status`, `_cstr`, `_bytes`, `_rd`, `_wr`,
      `<S>_list`, `<S>_iter`, `body.unknown`, enum constants).
    - Not yet: bitfields filling whole bytes (bitfields are not designed).
-3. **Lower to an IR:** a flat list of wire operations per struct (read u16 BE,
-   read cstr, read u8 array sized by field `len`, pad to 4, dispatch on
-   `opcode`), with fixed offsets computed where possible. Decode, encode and
-   size are all generated from the same list, so they cannot disagree.
-4. **Emit:** plain Python f-strings and a small helper that tracks
-   indentation, not a template engine.
+3. **Lower to an IR (done):** `ir.py`. A flat list of wire operations per
+   struct (`Int`, `Cstr`, `Rest`, `Sub`, `List`, `Dispatch`), with every
+   name already in C form, and structs ordered dependencies first. Decode,
+   encode and size are all generated from the same list, so they cannot
+   disagree. Constructs not implemented yet raise `NotImplementedError`
+   rather than emit wrong code. Fixed offsets are not computed yet; the
+   constant parts of a size are folded (`2 + in->data.len`).
+4. **Emit (done):** `emit.py`. Python f-strings for code that depends on
+   the schema, and `string.Template` (`${p}` = prefix) for fixed C such as
+   the primitives and list functions. Signatures that depend on name
+   lengths are wrapped by one helper, so all output stays within 79
+   columns. Long schema comments wrap one field per line.
+
+`python3 pktc.py SCHEMA [-o OUTDIR]` runs all four stages and writes
+`<proto>_gen.h` and `<proto>_gen.c` (next to the schema by default).
 
 ## Testing
 
-- **Golden files:** commit the generated `tftp_gen.h` and `tftp_gen.c`; tests
-  regenerate them and diff.
+- **Golden files:** the generated `tftp_gen.h` and `tftp_gen.c` are
+  committed; `tests/test_emit.py` regenerates them and fails if they differ.
+  After changing the emitter, regenerate with `python3 pktc.py
+  examples/tftp/tftp.schema` and review the diff.
+- **Generality:** `tests/test_emit.py` also generates a made-up `demo`
+  protocol covering what TFTP does not (u8/u32, u32 enums, nested structs,
+  switches in non-message structs, shared arms, several messages), compiles
+  it with `-Werror` and sanitizers, and round-trips packets through it.
 - **Round trip:** decode followed by encode gives back the same bytes.
 - **Fuzzing (libFuzzer via clang):** decode never crashes or reads out of
   bounds, and anything that decodes re-encodes to identical bytes.
@@ -201,7 +221,9 @@ depends on nothing.
    tests; `fuzz_tftp.c` is the libFuzzer harness (build command in its
    header comment).
 2. ~~Write the checker.~~ Done: `check.py`, tests in `tests/test_check.py`.
-3. Write the IR and C emitter, and make it reproduce the hand-written TFTP
-   code.
+3. ~~Write the IR and C emitter, and make it reproduce the hand-written TFTP
+   code.~~ Done: `ir.py`, `emit.py`, `pktc.py`. The committed TFTP code is
+   now generated. The C tests and fuzzer pass against it unchanged, except
+   that `encoded_size` no longer promises 0 for an unknown tag.
 4. Add PCP: bitfields, fixed arrays, length fields, padding and the `_`
    fallback arm.

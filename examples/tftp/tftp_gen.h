@@ -8,9 +8,11 @@
 
 typedef enum {
     TFTP_OK = 0,
-    TFTP_INVALID,   /* decode: malformed or truncated datagram;
-                       encode: unencodable input (unknown tag, NUL in cstr) */
-    TFTP_NOSPACE,   /* encode: output buffer too small */
+    /* decode: malformed or truncated input;
+     * encode: unencodable input (unknown tag, NUL in cstr) */
+    TFTP_INVALID,
+    /* encode: output buffer too small */
+    TFTP_NOSPACE,
 } tftp_status;
 
 /* enum Opcode : u16 */
@@ -88,9 +90,9 @@ struct tftp_oack {
     struct tftp_option_list options;
 };
 
-/* message Packet { opcode: Opcode; body: switch (opcode) { ... } } */
+/* message Packet { opcode: Opcode; body: switch (opcode) { ... }; } */
 struct tftp_packet {
-    enum tftp_opcode opcode;           /* selects body */
+    enum tftp_opcode opcode;  /* selects body */
     union {
         struct tftp_request request;  /* RRQ, WRQ */
         struct tftp_data    data;     /* DATA */
@@ -100,19 +102,19 @@ struct tftp_packet {
     } body;
 };
 
-/* Decode one datagram. Views in *out borrow buf: keep buf alive and unchanged
- * while using them. */
-tftp_status tftp_packet_decode(struct tftp_packet *out,
-                               const uint8_t *buf, size_t len);
+/* Decode one Packet. Views in *out borrow buf: keep buf alive and
+ * unchanged while using them. */
+tftp_status tftp_packet_decode(struct tftp_packet *out, const uint8_t *buf,
+                               size_t len);
 
-/* Encode into buf[0..cap). On TFTP_OK, *written is the datagram length. */
-tftp_status tftp_packet_encode(const struct tftp_packet *in,
-                               uint8_t *buf, size_t cap, size_t *written);
+/* Encode into buf[0..cap). On TFTP_OK, *written is the encoded length. */
+tftp_status tftp_packet_encode(const struct tftp_packet *in, uint8_t *buf,
+                               size_t cap, size_t *written);
 
-/* Exact number of bytes tftp_packet_encode will write. */
+/* Exact number of bytes tftp_packet_encode will write, if it succeeds. */
 size_t tftp_packet_encoded_size(const struct tftp_packet *in);
 
-/* Iterate the options of a decoded packet. Decode already validated them,
+/* Iterate a decoded Option[..]. Decode already validated it,
  * so next() only returns false at the end. */
 void tftp_option_iter_init(struct tftp_option_iter *it,
                            const struct tftp_option_list *list);

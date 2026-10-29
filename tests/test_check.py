@@ -220,6 +220,12 @@ class Invalid(unittest.TestCase):
             struct Option { x: u8; }
             struct OptionList { y: u8; }""", "also used by")
 
+    def test_switch_c_name_collision(self):
+        self.assertError(HEADER + """
+            enum K : u8 { A = 1 }
+            message M { k: K; body: switch (k) { A => MBody, }; }
+            struct MBody { x: u8; }""", "also used by")
+
     def test_enum_constant_collision(self):
         self.assertError(HEADER + """
             enum A : u8 { B_C = 1 }

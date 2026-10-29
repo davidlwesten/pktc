@@ -148,7 +148,6 @@ static void test_encode(void) {
     /* Unknown opcode. */
     struct tftp_packet bad = { .opcode = (enum tftp_opcode)9 };
     CHECK(tftp_packet_encode(&bad, out, sizeof out, &n) == TFTP_INVALID);
-    CHECK(tftp_packet_encoded_size(&bad) == 0);
 
     /* Hand-filled raw option bytes are validated. */
     static const uint8_t raw[] = { 'a', 0 };

@@ -270,6 +270,8 @@ class _Checker:
                 if isinstance(f, Field) and f.type.count == ".." and f.type.name in self.structs:
                     for suffix in ("_list", "_iter"):
                         claim(snake(f.type.name) + suffix, f"{f.type.name}[..]", f.line)
+                elif isinstance(f, Switch):
+                    claim(f"{snake(st.name)}_{f.name}", f"switch {st.name}.{f.name}", f.line)
 
         consts: dict[str, str] = {c: "the generated code" for c in ("OK", "INVALID", "NOSPACE")}
         for e in self.enums.values():
