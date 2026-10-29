@@ -1,6 +1,6 @@
 """Schema front end: text -> typed AST."""
 from dataclasses import dataclass, field as dc_field
-from lark import Lark, Transformer, v_args
+from lark import Lark, Transformer, UnexpectedEOF, UnexpectedInput, v_args
 
 GRAMMAR = r"""
 start: decl*
@@ -141,8 +141,25 @@ class ToAst(Transformer):
 
 _parser = Lark(GRAMMAR, parser="lalr", propagate_positions=True)
 
+class ParseError(Exception):
+    def __init__(self, line: int, column: int, msg: str):
+        super().__init__(f"line {line}:{column}: {msg}")
+        self.line, self.column, self.msg = line, column, msg
+
 def parse(text: str) -> Schema:
-    return ToAst().transform(_parser.parse(text))
+    try:
+        tree = _parser.parse(text)
+    except UnexpectedInput as e:
+        raise ParseError(e.line, e.column, syntax_error(e, text)) from None
+    return ToAst().transform(tree)
+
+def syntax_error(e: UnexpectedInput, text: str) -> str:
+    token = getattr(e, "token", None)
+    if isinstance(e, UnexpectedEOF) or token is not None and token.type == "$END":
+        return "unexpected end of file"
+    if token is not None:
+        return f"unexpected '{token}'"
+    return f"unexpected character '{text[e.pos_in_stream]}'"
 
 if __name__ == "__main__":
     import sys, pprint

@@ -7,3 +7,5 @@ crash-*
 leak-*
 timeout-*
 oom-*
+/build/
+/pktc.pyz

@@ -12,7 +12,7 @@ import sys
 from check import SchemaError, check
 from emit import emit, emit_fuzz
 from ir import lower
-from schema import parse
+from schema import ParseError, parse
 
 
 def compile_schema(path: pathlib.Path, fuzz: bool = False) -> tuple[str, dict[str, str]]:
@@ -28,13 +28,16 @@ def compile_schema(path: pathlib.Path, fuzz: bool = False) -> tuple[str, dict[st
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Generate C23 encode/decode code from a schema.")
+    ap = argparse.ArgumentParser(prog="pktc", description="Generate C23 encode/decode code from a schema.")
     ap.add_argument("schema", type=pathlib.Path)
     ap.add_argument("-o", "--outdir", type=pathlib.Path)
     ap.add_argument("--fuzz", action="store_true", help="also write <proto>_fuzz.c")
     args = ap.parse_args()
     try:
         _, files = compile_schema(args.schema, args.fuzz)
+    except ParseError as e:
+        print(f"{args.schema}:{e.line}:{e.column}: {e.msg}", file=sys.stderr)
+        return 1
     except SchemaError as e:
         for line, msg in e.errors:
             print(f"{args.schema}:{line}: {msg}", file=sys.stderr)

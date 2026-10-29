@@ -19,6 +19,7 @@ CFLAGS = ["-std=c23", "-Wall", "-Wextra", "-pedantic", "-Werror"]
 SANITIZE = ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
 HAVE_GCC = shutil.which("gcc") is not None
 HAVE_CLANG = shutil.which("clang") is not None
+HAVE_MAKE = shutil.which("make") is not None
 FUZZ_SECONDS = 3
 EXAMPLES = ["tftp", "pcp", "ntp", "stun"]
 
@@ -297,6 +298,33 @@ class Output(unittest.TestCase):
         self.assertIn("give back the input exactly", fuzz_source(
             "protocol p; message M { n: u8; s: S[n]; }"
             " struct S { _: u8; len: u8; v: u8[len] pad 4; }"))
+
+
+@unittest.skipUnless(HAVE_MAKE, "make not found")
+class Package(unittest.TestCase):
+    """make builds pktc.pyz, which carries Lark inside and needs nothing
+    outside the standard library (python3 -S skips site-packages)."""
+
+    def test_pyz(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            pyz = d / "pktc.pyz"
+            subprocess.run(["make", "-s", f"BUILD={d / 'build'}", f"PYZ={pyz}", str(pyz)],
+                           cwd=ROOT, check=True, capture_output=True)
+            run = subprocess.run([sys.executable, "-S", str(pyz),
+                                  str(ROOT / "examples/stun/stun.schema"), "-o", tmp, "--fuzz"],
+                                 capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            for name in ("stun_gen.h", "stun_gen.c", "stun_fuzz.c"):
+                self.assertEqual((d / name).read_text(),
+                                 (ROOT / "examples/stun" / name).read_text(), name)
+
+            bad = d / "bad.schema"
+            bad.write_text("protocol p;\nmessage M { a: u8 }\n")
+            run = subprocess.run([sys.executable, "-S", str(pyz), str(bad)],
+                                 capture_output=True, text=True)
+            self.assertEqual(run.returncode, 1)
+            self.assertEqual(run.stderr, f"{bad}:2:19: unexpected '}}'\n")
 
 
 @unittest.skipUnless(HAVE_GCC, "gcc not found")

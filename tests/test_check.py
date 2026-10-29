@@ -7,7 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from check import SchemaError, check, size_bounds, snake  # noqa: E402
-from schema import parse  # noqa: E402
+from schema import ParseError, parse  # noqa: E402
 
 HEADER = "protocol p;\n"
 TAGGED = """
@@ -374,6 +374,27 @@ class Bounds(unittest.TestCase):
             message M { k: K; body: switch (k) { A => X, B => Y, }; }
             struct X { x: u8; } struct Y { y: u32; }""")
         self.assertEqual(b["M"], (2, 5))
+
+
+class Syntax(unittest.TestCase):
+    def assertSyntax(self, text: str, line: int, column: int, msg: str):
+        with self.assertRaises(ParseError) as cm:
+            parse(text)
+        e = cm.exception
+        self.assertEqual((e.line, e.column, e.msg), (line, column, msg))
+
+    def test_unexpected_token(self):
+        self.assertSyntax(HEADER + "message M { a: u8 }", 2, 19, "unexpected '}'")
+
+    def test_unexpected_character(self):
+        self.assertSyntax(HEADER + "message M { a: u8; $ }", 2, 20, "unexpected character '$'")
+
+    def test_end_of_file(self):
+        self.assertSyntax(HEADER + "message M { a: u8;", 2, 18, "unexpected end of file")
+
+    def test_old_pad_statement(self):
+        self.assertSyntax(HEADER + "message M { n: u8; d: u8[n];\n pad(4); }", 3, 5,
+                          "unexpected '('")
 
 
 class Snake(unittest.TestCase):

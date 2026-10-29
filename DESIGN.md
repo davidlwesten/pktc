@@ -257,13 +257,28 @@ started as a hand-written target for the emitter.
 schema text --parse--> AST --check--> IR --emit--> <proto>_gen.h + <proto>_gen.c
 ```
 
-Written in Python, which is a build-time dependency only: the generated C
-depends on nothing.
+Written in Python (3.10 or later) with Lark, both build-time dependencies
+only: the generated C depends on nothing.
+
+**Distribution: one file, `pktc.pyz`.** `make` bundles the compiler's
+modules and Lark (pure Python, MIT, with its license file) into a zipapp,
+a zip file with a `#!/usr/bin/env python3` line. It runs as `./pktc.pyz
+SCHEMA` wherever Python is installed, with nothing else (132 KB, about
+0.25 s per schema); building it needs Lark. The alternatives were a pip package (the usual Python
+route, but not a single file, and it needs pip) and a native executable
+with the interpreter inside (PyInstaller, Nuitka: no Python needed, but
+10-15 MB and one build per OS and architecture). Anyone compiling the
+generated C almost certainly has Python, so the zipapp is enough for now;
+a native build can be added on top if that changes.
 
 1. **Parse (done):** `schema.py`, a Lark grammar plus a transformer into
-   dataclasses. `python3 schema.py FILE` prints the AST. Lark can later emit
-   a standalone parser (`python -m lark.tools.standalone`) to drop the
-   dependency.
+   dataclasses. `python3 schema.py FILE` prints the AST. Syntax errors are
+   reported as `file:line:column: unexpected '}'`, like the checker's
+   errors. Lark's standalone generator (a parser module that needs no
+   Lark) was tried and dropped: its output is MPL-2.0, while pktc is MIT
+   and Lark itself is MIT, and its output is not reproducible (tables are
+   numbered differently from run to run). Bundling Lark in the zipapp
+   gives the same single file.
 2. **Check (done):** `check.py`, `python3 check.py FILE`. It collects every
    error with its line number instead of stopping at the first. After it
    passes, later stages may assume a well-formed schema. Tests:
@@ -384,10 +399,11 @@ default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness (see
 5. ~~Add NTP and STUN.~~ Done: `examples/ntp/`, `examples/stun/`. They
    needed signed integers, `S[len]` and field padding (replacing
    `pad(n)`), but no escape hatch.
-6. Candidates for next, roughly in order:
-   - Emit a standalone Lark parser so the compiler has no dependencies
-     either.
-   - Add a Makefile (or similar) for the C tests and long fuzz runs.
+6. ~~Package the compiler as one file; add a Makefile.~~ Done: `make`
+   builds `pktc.pyz` (with Lark inside), and `make check`,
+   `make fuzz` (or `fuzz-<proto>`, `FUZZ_SECONDS=...`) run the C tests and
+   long fuzz runs.
+7. Candidates for next:
    - A protocol that needs what is still deferred: DNS (element counts,
      name compression, the first real escape hatch) or DHCP (options
      ending at an END code, inside a fixed-size BOOTP header).

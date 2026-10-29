@@ -432,10 +432,13 @@ class _Checker:
 
 if __name__ == "__main__":
     import sys
-    from schema import parse
+    from schema import ParseError, parse
     path = sys.argv[1]
     try:
         check(parse(open(path).read()))
+    except ParseError as e:
+        print(f"{path}:{e.line}:{e.column}: {e.msg}", file=sys.stderr)
+        sys.exit(1)
     except SchemaError as e:
         for line, msg in e.errors:
             print(f"{path}:{line}: {msg}", file=sys.stderr)
