@@ -1,0 +1,22 @@
+protocol tftp;
+endian big;
+
+enum Opcode : u16 { RRQ = 1, WRQ = 2, DATA = 3, ACK = 4, ERROR = 5, OACK = 6 }
+
+message Packet {
+    opcode: Opcode;
+    body: switch (opcode) {
+        RRQ, WRQ => Request,
+        DATA     => Data,
+        ACK      => Ack,
+        ERROR    => Error,
+        OACK     => Oack,
+    };
+}
+
+struct Request   { filename: cstr; mode: cstr; options: Option[..]; }
+struct Option    { name: cstr; value: cstr; }
+struct Data      { block: u16; data: u8[..]; }   // [..] = to end of message
+struct Ack       { block: u16; }
+struct Error     { code: u16; message: cstr; }
+struct Oack      { options: Option[..]; }

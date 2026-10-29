@@ -1,0 +1,10 @@
+__pycache__/
+*.o
+/examples/*/test_*
+!/examples/*/test_*.c
+/examples/*/fuzz_*
+!/examples/*/fuzz_*.c
+crash-*
+leak-*
+timeout-*
+oom-*
