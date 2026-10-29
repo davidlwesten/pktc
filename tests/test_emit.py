@@ -20,6 +20,7 @@ SANITIZE = ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
 HAVE_GCC = shutil.which("gcc") is not None
 HAVE_CLANG = shutil.which("clang") is not None
 FUZZ_SECONDS = 3
+EXAMPLES = ["tftp", "pcp"]
 
 # Covers what TFTP does not: u8/u32 fields, a u32 enum, an enum field that is
 # not a switch tag, a nested struct, a switch in a non-message struct that
@@ -274,15 +275,22 @@ class Output(unittest.TestCase):
         self.assertNotIn("DEMO_HELLO_MAX_SIZE", h)
 
     def test_lines_fit(self):
-        for text in (DEMO, BITS):
+        examples = [(ROOT / "examples" / p / f"{p}.schema").read_text() for p in EXAMPLES]
+        for text in (DEMO, BITS, *examples):
             h, c = generate(text)
-            f = emit_fuzz(lower(parse(text), "x.schema"))
+            f = fuzz_source(text)
             long = [l for l in (h + c + f).splitlines() if len(l) > 79]
             self.assertEqual(long, [])
 
     def test_strict_round_trip_only_without_reserved(self):
         self.assertIn("give back the input exactly", fuzz_source(DEMO))
         self.assertIn("has reserved fields or padding", fuzz_source(BITS))
+
+    def test_padding_in_lists_is_exact(self):
+        # Decoded lists are re-encoded from their raw bytes, padding and all.
+        self.assertIn("give back the input exactly", fuzz_source(
+            "protocol p; message M { n: u8; s: S[n]; }"
+            " struct S { _: u8; len: u8; v: u8[len] pad 4; }"))
 
 
 @unittest.skipUnless(HAVE_GCC, "gcc not found")

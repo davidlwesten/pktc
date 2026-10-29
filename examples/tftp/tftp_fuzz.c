@@ -155,7 +155,8 @@ static void build_request(struct src *in, struct tftp_request *v) {
             n = 0;
         for (size_t i = 0; i < n; i++)
             build_option(in, &items[i]);
-        v->options = (struct tftp_option_list){ .items = items, .count = n };
+        struct tftp_option_list list = { .items = items, .count = n };
+        v->options = list;
     }
 }
 
@@ -181,7 +182,8 @@ static void build_oack(struct src *in, struct tftp_oack *v) {
             n = 0;
         for (size_t i = 0; i < n; i++)
             build_option(in, &items[i]);
-        v->options = (struct tftp_option_list){ .items = items, .count = n };
+        struct tftp_option_list list = { .items = items, .count = n };
+        v->options = list;
     }
 }
 
@@ -228,7 +230,8 @@ static void decode_packet(const uint8_t *buf, size_t size) {
     size_t n = 0;
     if (tftp_packet_encode(&msg, a, size, &n) != TFTP_OK || n != size)
         abort();
-    if (size != 0 && tftp_packet_encode(&msg, b, size - 1, &n) != TFTP_NOSPACE)
+    if (size != 0 &&
+        tftp_packet_encode(&msg, b, size - 1, &n) != TFTP_NOSPACE)
         abort();
     if (memcmp(a, buf, size) != 0)
         abort();

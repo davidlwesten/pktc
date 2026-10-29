@@ -145,7 +145,8 @@ static void build_announce(struct src *in, struct pcp_announce *v) {
             n = 0;
         for (size_t i = 0; i < n; i++)
             build_option(in, &items[i]);
-        v->options = (struct pcp_option_list){ .items = items, .count = n };
+        struct pcp_option_list list = { .items = items, .count = n };
+        v->options = list;
     }
 }
 
@@ -162,7 +163,8 @@ static void build_map(struct src *in, struct pcp_map *v) {
             n = 0;
         for (size_t i = 0; i < n; i++)
             build_option(in, &items[i]);
-        v->options = (struct pcp_option_list){ .items = items, .count = n };
+        struct pcp_option_list list = { .items = items, .count = n };
+        v->options = list;
     }
 }
 
@@ -181,7 +183,8 @@ static void build_peer(struct src *in, struct pcp_peer *v) {
             n = 0;
         for (size_t i = 0; i < n; i++)
             build_option(in, &items[i]);
-        v->options = (struct pcp_option_list){ .items = items, .count = n };
+        struct pcp_option_list list = { .items = items, .count = n };
+        v->options = list;
     }
 }
 
@@ -252,7 +255,8 @@ static void decode_request(const uint8_t *buf, size_t size) {
     size_t n = 0;
     if (pcp_request_encode(&msg, a, size, &n) != PCP_OK || n != size)
         abort();
-    if (size != 0 && pcp_request_encode(&msg, b, size - 1, &n) != PCP_NOSPACE)
+    if (size != 0 &&
+        pcp_request_encode(&msg, b, size - 1, &n) != PCP_NOSPACE)
         abort();
     struct pcp_request again;
     if (pcp_request_decode(&again, a, size) != PCP_OK)
@@ -308,7 +312,8 @@ static void decode_response(const uint8_t *buf, size_t size) {
     size_t n = 0;
     if (pcp_response_encode(&msg, a, size, &n) != PCP_OK || n != size)
         abort();
-    if (size != 0 && pcp_response_encode(&msg, b, size - 1, &n) != PCP_NOSPACE)
+    if (size != 0 &&
+        pcp_response_encode(&msg, b, size - 1, &n) != PCP_NOSPACE)
         abort();
     struct pcp_response again;
     if (pcp_response_decode(&again, a, size) != PCP_OK)

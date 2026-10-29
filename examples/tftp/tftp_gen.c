@@ -278,7 +278,7 @@ static bool tftp_packet_body_read(struct tftp_rd *r, struct tftp_packet *out) {
     case TFTP_OPCODE_OACK:
         return tftp_oack_read(r, &out->body.oack);
     default:
-        return false; /* unknown tag */;
+        return false; /* unknown tag */
     }
 }
 
@@ -297,7 +297,7 @@ static tftp_status tftp_packet_body_write(struct tftp_wr *w,
     case TFTP_OPCODE_OACK:
         return tftp_oack_write(w, &in->body.oack);
     default:
-        return TFTP_INVALID; /* unknown tag */;
+        return TFTP_INVALID; /* unknown tag */
     }
 }
 
@@ -315,7 +315,7 @@ static size_t tftp_packet_body_size(const struct tftp_packet *in) {
     case TFTP_OPCODE_OACK:
         return tftp_oack_size(&in->body.oack);
     default:
-        return 0; /* unknown tag: encode fails */;
+        return 0; /* unknown tag: encode fails */
     }
 }
 

@@ -39,7 +39,10 @@ def sig(head: str, params: list[str], end: str) -> str:
             lines.append(cur + ",")
             cur = indent + p
     lines.append(cur + f"){end}")
-    return "\n".join(lines)
+    if all(len(l) <= WIDTH for l in lines):
+        return "\n".join(lines)
+    # Aligned after '(' does not fit: break after '(' and indent by 4.
+    return f"{head}(\n" + join_wrapped("    ", params, ", ", f"){end}")
 
 
 def sum_expr(lead: str, terms: list[str], end: str) -> str:
@@ -194,7 +197,9 @@ class Emitter:
                     if op.fallback:
                         arms.append((f"struct {p}_bytes", "unknown", "any other value"))
                     rows = table([(f"        {t}", f" {m};") for t, m, _ in arms], "")
-                    rows = table([(r, f"  /* {c} */") for r, (_, _, c) in zip(rows, arms)], "")
+                    rows = table([(r, "  /* ") for r in rows], "")
+                    rows = [join_wrapped(r, c.split(", "), ", ", " */")
+                            for r, (_, _, c) in zip(rows, arms)]
                     out += ["    union {", *rows, f"    }} {op.field};"]
                 case _:
                     out.append(f"    {self.member_type(op)} {op.field};")
@@ -473,16 +478,16 @@ class Emitter:
             for a in d.arms:
                 lines += [f"    case {enum}_{t}:" for t in a.tags]
                 lines.append(f"        return {call.format(m=a.member, s=a.struct)};")
-            return lines + ["    default:", f"        return {default};", "    }", "}", ""]
+            return lines + ["    default:", f"        {default}", "    }", "}", ""]
 
         if d.fallback:
-            defaults = (f"{p}_rd_rest(r, &out->{u})",
-                        f"{p}_wr_raw(w, in->{u}.ptr, in->{u}.len)",
-                        f"in->{u}.len")
+            defaults = (f"return {p}_rd_rest(r, &out->{u});",
+                        f"return {p}_wr_raw(w, in->{u}.ptr, in->{u}.len);",
+                        f"return in->{u}.len;")
         else:
-            defaults = ("false; /* unknown tag */",
-                        f"{P}_INVALID; /* unknown tag */",
-                        "0; /* unknown tag: encode fails */")
+            defaults = ("return false; /* unknown tag */",
+                        f"return {P}_INVALID; /* unknown tag */",
+                        "return 0; /* unknown tag: encode fails */")
         return "\n".join([
             sig(f"static bool {fn}_read", [f"struct {p}_rd *r", f"struct {s} *out"], " {"),
             f"    switch (out->{d.tag}) {{",
@@ -626,7 +631,8 @@ class FuzzEmitter(Emitter):
 
     def exact(self, st: StructDecl) -> bool:
         """True if decode -> encode reproduces the input byte for byte: no
-        reserved field or padding is reachable from st."""
+        reserved field or padding is reachable from st, except inside lists,
+        which encode copies from their raw bytes."""
         seen = set()
         def ok(s: StructDecl) -> bool:
             if s.name in seen:
@@ -642,8 +648,6 @@ class FuzzEmitter(Emitter):
                                         b.length_of is None for b in op.bits):
                         return False
                     case Sub() if not ok(self.structs[op.struct]):
-                        return False
-                    case List() if not ok(self.structs[op.elem]):
                         return False
                     case Dispatch() if not all(ok(self.structs[a.struct]) for a in op.arms):
                         return False
@@ -681,7 +685,8 @@ class FuzzEmitter(Emitter):
                 "    size_t n = 0;",
                 f"    if ({m}_encode(&msg, a, size, &n) != {P}_OK || n != size)",
                 "        abort();",
-                f"    if (size != 0 && {m}_encode(&msg, b, size - 1, &n) != {P}_NOSPACE)",
+                "    if (size != 0 &&",
+                f"        {m}_encode(&msg, b, size - 1, &n) != {P}_NOSPACE)",
                 "        abort();",
                 *check,
                 "    free(a);",
@@ -731,8 +736,8 @@ class FuzzEmitter(Emitter):
                              "            n = 0;",
                              "        for (size_t i = 0; i < n; i++)",
                              f"            build_{op.elem}(in, &items[i]);",
-                             f"        v->{op.field} = (struct {e}_list){{ .items = items, "
-                             ".count = n };",
+                             f"        struct {e}_list list = {{ .items = items, .count = n }};",
+                             f"        v->{op.field} = list;",
                              "    }"]
                 case Dispatch():
                     body += self.build_dispatch(op)
