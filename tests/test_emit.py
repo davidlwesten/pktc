@@ -276,6 +276,15 @@ class Output(unittest.TestCase):
         for absent in ("rd_u8", "rd_u32", "rd_cstr", "rd_rest", "wr_raw", "cstr_size"):
             self.assertNotIn(absent, c)
 
+    def test_constexpr_constants(self):
+        h, _ = generate("protocol p; const PORT: u16 = 5351; const KEY: u32 = 0x2112A442;"
+                        " message M max 9 { n: u8; d: u8[n]; }")
+        self.assertIn("constexpr uint16_t P_PORT = 5351;", h)
+        self.assertIn("constexpr uint32_t P_KEY  = 0x2112A442;", h)  # as written
+        self.assertIn("constexpr size_t P_M_MAX_SIZE = 9;", h)
+        h, _ = generate("protocol p; const A: u3 = 4; const LONG: u16 = 1; message M { a: u8; }")
+        self.assertIn("constexpr uint8_t  P_A    = 4;\nconstexpr uint16_t P_LONG = 1;", h)
+
     def test_no_max_size_when_unbounded(self):
         h, _ = generate(DEMO)
         self.assertIn("DEMO_HELLO_MIN_SIZE", h)

@@ -7,7 +7,7 @@ start: decl*
 
 ?decl: "protocol" NAME ";"                         -> protocol
      | "endian" ENDIAN ";"                         -> endian
-     | "const" NAME "=" INT ";"                    -> const
+     | "const" NAME ":" NAME "=" INT ";"           -> const
      | "enum" NAME ":" NAME "{" variants "}"       -> enum
      | KIND NAME ("max" INT)? "{" field* "}"       -> struct
 
@@ -37,6 +37,15 @@ INT: /0x[0-9a-fA-F]+|[0-9]+/
 %ignore /\s+/
 %ignore /\/\/[^\n]*/
 """
+
+class Int(int):
+    """An integer literal that remembers how it was written (5351, 0x2112A442)."""
+    text: str
+
+    def __new__(cls, text: str):
+        n = super().__new__(cls, int(text, 0))
+        n.text = text
+        return n
 
 @dataclass
 class Type:
@@ -89,6 +98,7 @@ class Struct:
 @dataclass
 class Const:
     name: str
+    type: str                  # u1..u32
     value: int
     line: int = dc_field(default=0, repr=False, compare=False)
 
@@ -102,7 +112,7 @@ class Schema:
 
 class ToAst(Transformer):
     def NAME(self, t): return str(t)
-    def INT(self, t): return int(t, 0)
+    def INT(self, t): return Int(str(t))
     def WILD(self, t): return "_"
     def protocol(self, c): return ("protocol", c[0])
     def endian(self, c): return ("endian", str(c[0]))
@@ -117,7 +127,7 @@ class ToAst(Transformer):
         fields = c[3:] if max_ is not None else c[2:]
         return Struct(c[1], str(c[0]) == "message", fields, max_, m.line)
     @v_args(meta=True)
-    def const(self, m, c): return Const(c[0], c[1], m.line)
+    def const(self, m, c): return Const(c[0], c[1], c[2], m.line)
     def scalar(self, c): return Type(c[0])
     def fixed_array(self, c): return Type(c[0], c[1], True)
     def sized_array(self, c): return Type(c[0], c[1], True)

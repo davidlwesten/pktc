@@ -1,9 +1,9 @@
 // Port Control Protocol, RFC 6887.
 protocol pcp;
 
-const VERSION = 2;         // decode leaves checking it to the caller (UNSUPP_VERSION)
-const SERVER_PORT = 5351;
-const CLIENT_PORT = 5350;
+const VERSION: u8 = 2;         // decode leaves checking it to the caller (UNSUPP_VERSION)
+const SERVER_PORT: u16 = 5351;
+const CLIENT_PORT: u16 = 5350;
 
 enum Opcode : u7 { ANNOUNCE = 0, MAP = 1, PEER = 2 }
 

@@ -17,8 +17,8 @@ typedef enum {
 } ntp_status;
 
 /* Constants from ntp.schema. */
-#define NTP_PORT    123
-#define NTP_VERSION 4
+constexpr uint16_t NTP_PORT    = 123;
+constexpr uint8_t  NTP_VERSION = 4;
 
 /* enum Leap : u2 */
 enum ntp_leap : uint8_t {
@@ -141,7 +141,7 @@ struct ntp_packet {
 };
 
 /* Size limits of an encoded Packet, in bytes. */
-#define NTP_PACKET_MIN_SIZE 1
+constexpr size_t NTP_PACKET_MIN_SIZE = 1;
 
 /* Decode one Packet. Views in *out borrow buf: keep buf alive and
  * unchanged while using them. */

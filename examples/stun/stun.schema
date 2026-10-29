@@ -1,9 +1,9 @@
 // Session Traversal Utilities for NAT, RFC 8489.
 protocol stun;
 
-const PORT = 3478;
-const TLS_PORT = 5349;
-const MAGIC_COOKIE = 0x2112A442;   // also the key for XOR-MAPPED-ADDRESS
+const PORT: u16 = 3478;
+const TLS_PORT: u16 = 5349;
+const MAGIC_COOKIE: u32 = 0x2112A442;   // also the key for XOR-MAPPED-ADDRESS
 
 // Section 5: the 14-bit type interleaves a 12-bit method and a 2-bit class
 // (request, indication, success, error). These are the Binding method's.

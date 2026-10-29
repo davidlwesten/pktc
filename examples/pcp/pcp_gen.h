@@ -17,9 +17,9 @@ typedef enum {
 } pcp_status;
 
 /* Constants from pcp.schema. */
-#define PCP_VERSION     2
-#define PCP_SERVER_PORT 5351
-#define PCP_CLIENT_PORT 5350
+constexpr uint8_t  PCP_VERSION     = 2;
+constexpr uint16_t PCP_SERVER_PORT = 5351;
+constexpr uint16_t PCP_CLIENT_PORT = 5350;
 
 /* enum Opcode : u7 */
 enum pcp_opcode : uint8_t {
@@ -152,8 +152,8 @@ struct pcp_request {
 
 /* Size limits of an encoded Request, in bytes. Decode and encode
  * reject a Request larger than PCP_REQUEST_MAX_SIZE. */
-#define PCP_REQUEST_MIN_SIZE 24
-#define PCP_REQUEST_MAX_SIZE 1100
+constexpr size_t PCP_REQUEST_MIN_SIZE = 24;
+constexpr size_t PCP_REQUEST_MAX_SIZE = 1100;
 
 /* message Response max 1100 {
  *     version: u8;
@@ -182,8 +182,8 @@ struct pcp_response {
 
 /* Size limits of an encoded Response, in bytes. Decode and encode
  * reject a Response larger than PCP_RESPONSE_MAX_SIZE. */
-#define PCP_RESPONSE_MIN_SIZE 24
-#define PCP_RESPONSE_MAX_SIZE 1100
+constexpr size_t PCP_RESPONSE_MIN_SIZE = 24;
+constexpr size_t PCP_RESPONSE_MAX_SIZE = 1100;
 
 /* Decode one Request. Views in *out borrow buf: keep buf alive and
  * unchanged while using them. */

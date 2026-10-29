@@ -104,7 +104,7 @@ struct tftp_packet {
 };
 
 /* Size limits of an encoded Packet, in bytes. */
-#define TFTP_PACKET_MIN_SIZE 2
+constexpr size_t TFTP_PACKET_MIN_SIZE = 2;
 
 /* Decode one Packet. Views in *out borrow buf: keep buf alive and
  * unchanged while using them. */

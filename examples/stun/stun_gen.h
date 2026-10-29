@@ -17,9 +17,9 @@ typedef enum {
 } stun_status;
 
 /* Constants from stun.schema. */
-#define STUN_PORT         3478
-#define STUN_TLS_PORT     5349
-#define STUN_MAGIC_COOKIE 554869826
+constexpr uint16_t STUN_PORT         = 3478;
+constexpr uint16_t STUN_TLS_PORT     = 5349;
+constexpr uint32_t STUN_MAGIC_COOKIE = 0x2112A442;
 
 /* enum Type : u14 */
 enum stun_type : uint16_t {
@@ -103,8 +103,8 @@ struct stun_message {
 };
 
 /* Size limits of an encoded Message, in bytes. */
-#define STUN_MESSAGE_MIN_SIZE 20
-#define STUN_MESSAGE_MAX_SIZE 65555
+constexpr size_t STUN_MESSAGE_MIN_SIZE = 20;
+constexpr size_t STUN_MESSAGE_MAX_SIZE = 65555;
 
 /* struct Ipv4 { addr: u8[4]; } */
 struct stun_ipv4 {
@@ -132,8 +132,8 @@ struct stun_address {
 };
 
 /* Size limits of an encoded Address, in bytes. */
-#define STUN_ADDRESS_MIN_SIZE 8
-#define STUN_ADDRESS_MAX_SIZE 20
+constexpr size_t STUN_ADDRESS_MIN_SIZE = 8;
+constexpr size_t STUN_ADDRESS_MAX_SIZE = 20;
 
 /* message ErrorCode { _: u21; class: u3; number: u8; reason: u8[..]; } */
 struct stun_error_code {
@@ -143,7 +143,7 @@ struct stun_error_code {
 };
 
 /* Size limits of an encoded ErrorCode, in bytes. */
-#define STUN_ERROR_CODE_MIN_SIZE 4
+constexpr size_t STUN_ERROR_CODE_MIN_SIZE = 4;
 
 /* message Fingerprint { crc: u32; } */
 struct stun_fingerprint {
@@ -151,8 +151,8 @@ struct stun_fingerprint {
 };
 
 /* Size limits of an encoded Fingerprint, in bytes. */
-#define STUN_FINGERPRINT_MIN_SIZE 4
-#define STUN_FINGERPRINT_MAX_SIZE 4
+constexpr size_t STUN_FINGERPRINT_MIN_SIZE = 4;
+constexpr size_t STUN_FINGERPRINT_MAX_SIZE = 4;
 
 /* Decode one Message. Views in *out borrow buf: keep buf alive and
  * unchanged while using them. */

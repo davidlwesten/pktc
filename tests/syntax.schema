@@ -1,6 +1,6 @@
 // Exercises syntax not used by TFTP: length fields, sized arrays, padding,
 // bitfields, signed, constant and reserved fields, const declarations and max.
-const PORT = 5351;
+const PORT: u16 = 5351;
 
 message Header max 64 {
     version: u8;

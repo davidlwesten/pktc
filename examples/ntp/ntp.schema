@@ -2,8 +2,8 @@
 // messages (RFC 9327). Mode 7 (private) is implementation-specific.
 protocol ntp;
 
-const PORT = 123;
-const VERSION = 4;
+const PORT: u16 = 123;
+const VERSION: u3 = 4;
 
 enum Leap : u2 { NONE = 0, ADD_SECOND = 1, DEL_SECOND = 2, UNSYNCHRONIZED = 3 }
 

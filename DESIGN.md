@@ -42,7 +42,7 @@ The feature set, derived from TFTP and PCP:
 | Bitfields | `r: u1; opcode: Opcode;` (enum on `u7`) | PCP (R bit + 7-bit opcode) |
 | Constant fields | `r: u1 = 0;` | PCP (R bit) |
 | Reserved fields | `_: u24;`, `_: u8[12];` | PCP |
-| Named constants | `const SERVER_PORT = 5351;` | PCP (version, ports) |
+| Named constants | `const SERVER_PORT: u16 = 5351;` | PCP (version, ports) |
 | Declared maximum size | `message Request max 1100 { ... }` | PCP (1100 bytes) |
 | Fixed integer arrays | `nonce: u8[12];`, `words: u16[3];` | PCP (addresses, nonce) |
 | Switch on a tag field | `body: switch (opcode) { RRQ, WRQ => Request, ... };` | both |
@@ -75,7 +75,7 @@ decode, written as zeros on encode. Only check a value with a constant
 when a mismatch should drop the message. PCP's R bit is a constant, but
 its version is a plain field, because a server must answer an unknown
 version with `UNSUPP_VERSION` rather than drop it. The caller compares it
-against `const VERSION = 2;`.
+against `const VERSION: u8 = 2;`.
 
 **Fixed arrays are copied into the C struct** (`uint8_t nonce[12]`,
 `uint16_t words[3]`), so callers fill them in directly. Elements are
@@ -113,7 +113,7 @@ spelled this `len: u16 = sizeof(data)`; it was dropped because it repeated
 what `u8[len]` already says, and C's `sizeof` suggested the wrong meaning.
 
 **Message sizes.** Every message gets a generated
-`<PROTO>_<MSG>_MIN_SIZE`, which is always computable. It also gets
+`<PROTO>_<MSG>_MIN_SIZE` (a `constexpr size_t`), which is always computable. It also gets
 `<PROTO>_<MSG>_MAX_SIZE` when a maximum is known, for sizing receive
 buffers. A maximum is known in two ways:
 
@@ -129,9 +129,22 @@ buffers. A maximum is known in two ways:
 negotiated `blksize`, which is session state, not wire format. Callers
 without a `_MAX_SIZE` use the transport's limit (65,507 bytes for UDP).
 
-**Named constants.** `const SERVER_PORT = 5351;` generates
-`#define <PROTO>_SERVER_PORT 5351`, for protocol numbers callers need,
-such as ports and versions.
+**Named constants.** `const SERVER_PORT: u16 = 5351;` generates
+`constexpr uint16_t <PROTO>_SERVER_PORT = 5351;`, for protocol numbers
+callers need, such as ports and versions. The type is `u1..u32` and the
+checker verifies the value fits (NTP's `const VERSION: u3 = 4;` matches
+its 3-bit field). The value keeps its spelling, so `0x2112A442` stays hex.
+
+**Constants are C23 `constexpr` objects, not `#define`s:** they have a
+type, follow C scoping, and show up in a debugger. A file-scope
+`constexpr` has internal linkage, so each file including the header gets
+its own copy without a multiple-definition error. They work in array
+sizes, `static_assert`, `case` labels and static initializers; the one
+loss is the preprocessor (`#if PCP_SERVER_PORT == ...` does not see
+them). A constant gets its type from the schema rather than from its
+value: inferring would have made NTP's port 123 a `uint8_t`. The only
+macros left are the include guard, `<PROTO>_CSTR(s)` (which takes a
+string literal), and `CHECK`/`TRY` inside the `.c` file.
 
 **Deferred until a target protocol needs them:**
 - *Count-prefixed arrays.* DNS counts questions with a header field. Since

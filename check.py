@@ -126,6 +126,8 @@ class _Checker:
 
     def run(self) -> list[tuple[int, str]]:
         self.top_level()
+        for c in self.s.consts:
+            self.const(c)
         for e in self.s.enums:
             self.enum(e)
         for st in self.s.structs:
@@ -153,6 +155,13 @@ class _Checker:
                 (self.enums if d in s.enums else self.structs)[d.name] = d
         if not any(st.is_message for st in s.structs):
             self.err(1, "no message declared")
+
+    def const(self, c) -> None:
+        bits = uint_bits(c.type)
+        if bits is None:
+            self.err(c.line, f"const {c.name}: type must be u1..u32, not '{c.type}'")
+        elif c.value >= 1 << bits:
+            self.err(c.line, f"const {c.name}: {c.value} does not fit in {c.type}")
 
     def enum(self, e) -> None:
         bits = uint_bits(e.base)

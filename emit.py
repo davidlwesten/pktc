@@ -124,8 +124,10 @@ class Emitter:
                "#include <stdbool.h>", "#include <stddef.h>", "#include <stdint.h>", "",
                self.t(H_STATUS)]
         if self.proto.consts:
-            rows = [(f"#define {self.P}_{n}", str(v)) for n, v in self.proto.consts]
-            out += [f"/* Constants from {self.proto.source}. */", *table(rows, " "), ""]
+            types = table([(f"constexpr {c_uint(bits)}", f"{self.P}_{n}")
+                           for n, bits, _ in self.proto.consts], " ")
+            rows = table([(t, f" = {v};") for t, (_, _, v) in zip(types, self.proto.consts)], "")
+            out += [f"/* Constants from {self.proto.source}. */", *rows, ""]
         out += [self.h_enum(e) for e in self.proto.enums]
         if self.uses_cstr:
             out.append(self.t(H_CSTR))
@@ -213,10 +215,10 @@ class Emitter:
                        "encode", f" * reject a {st.schema_name} larger than {m}_MAX_SIZE. */"]
         else:
             comment = [f"/* Size limits of an encoded {st.schema_name}, in bytes. */"]
-        rows = [(f"#define {m}_MIN_SIZE", str(st.min_size))]
+        rows = [(f"constexpr size_t {m}_MIN_SIZE", f" = {st.min_size};")]
         if st.max_size is not None:
-            rows.append((f"#define {m}_MAX_SIZE", str(st.max_size)))
-        return "\n".join([*comment, *table(rows, " "), ""])
+            rows.append((f"constexpr size_t {m}_MAX_SIZE", f" = {st.max_size};"))
+        return "\n".join([*comment, *table(rows, ""), ""])
 
     def h_message_api(self, st: StructDecl) -> str:
         p, m = self.p, f"{self.p}_{st.name}"

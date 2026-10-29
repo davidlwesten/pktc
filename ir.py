@@ -111,7 +111,7 @@ class StructDecl:
 class Proto:
     name: str
     source: str
-    consts: list[tuple[str, int]]   # (C-ready name, value)
+    consts: list[tuple[str, int, str]]   # (C-ready name, bits, value as written)
     enums: list[EnumDecl]
     structs: list[StructDecl]   # dependencies first; only those reachable from a message
 
@@ -221,7 +221,9 @@ def lower(s: Schema, source: str) -> Proto:
     return Proto(
         name=s.protocol,
         source=source,
-        consts=[(snake(c.name).upper(), c.value) for c in s.consts],
+        consts=[(snake(c.name).upper(), int_bits(c.type), getattr(c.value, "text",
+                                                                 str(c.value)))
+                for c in s.consts],
         enums=[EnumDecl(snake(e.name), f"enum {e.name} : {e.base}", int_bits(e.base),
                         [(snake(v.name).upper(), v.value) for v in e.variants])
                for e in s.enums],

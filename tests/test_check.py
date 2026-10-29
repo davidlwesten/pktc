@@ -326,7 +326,16 @@ class Invalid(unittest.TestCase):
 
     # declarations: const, max
     def test_const_decl_collision(self):
-        self.assertError(HEADER + "const OK = 1; message M { a: u8; }", "<PROTO>_OK")
+        self.assertError(HEADER + "const OK: u8 = 1; message M { a: u8; }", "<PROTO>_OK")
+
+    def test_const_type(self):
+        for t in ("u0", "u33", "i8", "Foo", "cstr"):
+            self.assertError(HEADER + f"const C: {t} = 1; message M {{ a: u8; }}",
+                             "type must be u1..u32")
+
+    def test_const_value_fits(self):
+        self.assertError(HEADER + "const V: u3 = 8; message M { a: u8; }", "does not fit in u3")
+        self.assertEqual(errors(HEADER + "const V: u3 = 7; message M { a: u8; }"), [])
 
     def test_max_on_struct(self):
         self.assertError(HEADER + "message M { a: u8; } struct S max 4 { a: u8; }",
