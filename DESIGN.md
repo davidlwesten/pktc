@@ -30,6 +30,8 @@ The feature set, derived from TFTP and PCP:
 | Big-endian u8/u16/u32 | `block: u16;` | both |
 | Bitfields within a byte | not designed yet | PCP (R bit + 7-bit opcode) |
 | Reserved/constant fields | `reserved: u8;` (constants not designed yet) | PCP |
+| Named constants | `const PORT = 5351;` (planned) | PCP (version, port) |
+| Declared maximum size | `message Request max 1100 { ... }` (planned) | PCP (1100 bytes) |
 | Fixed byte arrays | `nonce: u8[12];` | PCP (addresses, nonce) |
 | Switch on a tag field | `body: switch (opcode) { RRQ, WRQ => Request, ... };` | both |
 | NUL-terminated string | `filename: cstr;` | TFTP |
@@ -50,6 +52,44 @@ allowed. Lengths in other units (4-byte words, counts including a header)
 would need expressions and go through the escape hatch. An earlier draft
 spelled this `len: u16 = sizeof(data)`; it was dropped because it repeated
 what `u8[len]` already says, and C's `sizeof` suggested the wrong meaning.
+
+**Message sizes (planned, with PCP).** Every message gets a generated
+`<PROTO>_<MSG>_MIN_SIZE`, which is always computable. It also gets
+`<PROTO>_<MSG>_MAX_SIZE` when a maximum is known, for sizing receive
+buffers. A maximum is known in two ways:
+
+| Message | `max` | `_MAX_SIZE` | Enforced |
+|---|---|---|---|
+| bounded by its fields (NTP: 48 bytes) | no | computed | not needed |
+| unbounded, RFC states a limit (PCP: 1100) | yes | declared value | decode `INVALID`, encode refuses |
+| unbounded, no fixed limit (TFTP) | no | none | no |
+
+`max` is optional. The checker rejects a `max` below the computed minimum
+(no valid message could fit) and a `max` at or above a computed maximum
+(it could never apply). TFTP declares no `max`: its limit depends on the
+negotiated `blksize`, which is session state, not wire format. Callers
+without a `_MAX_SIZE` use the transport's limit (65,507 bytes for UDP).
+
+**Named constants (planned, with PCP).** `const PORT = 5351;` generates
+`#define <PROTO>_PORT 5351`. These are for protocol numbers callers need,
+such as ports and versions, and will be designed together with constant
+fields (PCP's `version = 2`).
+
+**Deferred until a target protocol needs them:**
+- *Count- and byte-length-prefixed arrays.* `[n]` is ambiguous for
+  anything wider than a byte. Protocols use both meanings: DNS counts
+  questions with a header field (`qs: Question[qdcount]`), while TLV
+  containers (STUN attributes, DHCP options, NTP extensions) give a byte
+  length (perhaps `opts: Option[bytes len]`). Counts are simple. A byte
+  length around structs is a nested length scope: decode must fence off a
+  sub-buffer and end exactly on an element boundary, and encode must
+  measure before writing. Design these with STUN, DNS or DHCP.
+- *Length-prefixed strings.* On the wire these are `u8[len]`. A string
+  type would only change the C type to `const char *`, and unlike `cstr`
+  it still would not be NUL-terminated.
+- *Inline prefix syntax* such as `data: u8[u16]` for a length placed
+  immediately before. The two-field form must stay, because many protocols
+  put the length elsewhere, so add this only if schemas get noisy without it.
 
 Not supported: little-endian, varints, checksums, arbitrary expressions,
 nested length scopes, optional fields, versioning.
@@ -225,5 +265,7 @@ depends on nothing.
    code.~~ Done: `ir.py`, `emit.py`, `pktc.py`. The committed TFTP code is
    now generated. The C tests and fuzzer pass against it unchanged, except
    that `encoded_size` no longer promises 0 for an unknown tag.
-4. Add PCP: bitfields, fixed arrays, length fields, padding and the `_`
-   fallback arm.
+4. Add PCP: bitfields, constant fields, fixed arrays, length fields,
+   padding and the `_` fallback arm. Along with these, add `const`
+   declarations, `message ... max N`, and the generated `_MIN_SIZE` and
+   `_MAX_SIZE` constants (see "Message sizes").
