@@ -42,7 +42,7 @@ class Valid(unittest.TestCase):
                 body: switch (op) { MAP => Map, _ => u8[..], };
             }
             struct Map { nonce: u8[12]; port: u16; options: Opt[..]; }
-            struct Opt { code: u8; reserved: u8; len: u16 = sizeof(data); data: u8[len]; pad(4); }
+            struct Opt { code: u8; reserved: u8; len: u16; data: u8[len]; pad(4); }
         """), [])
 
     def test_open_struct_last_in_struct_last(self):
@@ -137,24 +137,20 @@ class Invalid(unittest.TestCase):
 
     # length fields
     def test_length_field_later(self):
-        self.assertError(HEADER + "message M { d: u8[n]; n: u8 = sizeof(d); }",
-                         "declared earlier")
-
-    def test_length_field_missing_sizeof(self):
-        self.assertError(HEADER + "message M { n: u8; d: u8[n]; }", "= sizeof(d)")
+        self.assertError(HEADER + "message M { d: u8[n]; n: u8; }", "declared earlier")
 
     def test_length_field_not_int(self):
         self.assertError(HEADER + "message M { n: cstr; d: u8[n]; }", "must be u8, u16 or u32")
 
-    def test_sizeof_unknown_target(self):
-        self.assertError(HEADER + "message M { n: u8 = sizeof(x); }", "no field 'x'")
+    def test_length_field_array(self):
+        self.assertError(HEADER + "message M { n: u8[2]; d: u8[n]; }", "must be u8, u16 or u32")
 
-    def test_sizeof_target_not_sized_by_it(self):
-        self.assertError(HEADER + "message M { n: u8 = sizeof(d); d: u8[4]; }", "d: u8[n]")
+    def test_length_field_sizes_two_arrays(self):
+        self.assertError(HEADER + "message M { n: u8; a: u8[n]; b: u8[n]; }",
+                         "already sizes 'a'")
 
-    def test_sizeof_on_non_int(self):
-        self.assertError(HEADER + "message M { n: u8[2] = sizeof(d); d: u8[n]; }",
-                         "sizeof field must be")
+    def test_sized_array_not_u8(self):
+        self.assertError(HEADER + "message M { n: u8; d: u16[n]; }", "must be u8[n]")
 
     # switches
     def test_switch_tag_later(self):

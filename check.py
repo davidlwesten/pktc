@@ -99,6 +99,7 @@ class _Checker:
             self.err(st.line, f"{st.name}: empty structs are not supported")
             return
         seen: dict[str, Field | Switch] = {}
+        lengths: dict[str, str] = {}  # length field -> the array it sizes
         last = len(st.fields) - 1
         for i, f in enumerate(st.fields):
             if not isinstance(f, Pad):
@@ -107,7 +108,7 @@ class _Checker:
                 if f.name in C_KEYWORDS:
                     self.err(f.line, f"{st.name}: field name '{f.name}' is a C keyword")
             if isinstance(f, Field):
-                self.field(st, f, seen)
+                self.field(st, f, seen, lengths)
             elif isinstance(f, Switch):
                 self.switch(st, f, seen)
             elif f.align < 1:
@@ -118,11 +119,8 @@ class _Checker:
                 self.err(f.line, f"{st.name}.{f.name}: a {what} must be the last field")
             if not isinstance(f, Pad):
                 seen[f.name] = f
-        for f in st.fields:
-            if isinstance(f, Field) and f.size_of is not None:
-                self.size_of(st, f)
 
-    def field(self, st: Struct, f: Field, earlier: dict) -> None:
+    def field(self, st: Struct, f: Field, earlier: dict, lengths: dict) -> None:
         where = f"{st.name}.{f.name}"
         t = f.type
         if not self.resolve(where, t, f.line):
@@ -140,28 +138,21 @@ class _Checker:
         if isinstance(t.count, int) and t.count < 1:
             self.err(f.line, f"{where}: array length must be at least 1")
         if isinstance(t.count, str) and t.count != "..":
+            # The length field holds the array's size in bytes; encode
+            # computes it, so the caller never sets it.
+            if t.name in INTS and t.name != "u8":
+                self.err(f.line, f"{where}: an array sized by a field must be u8[{t.count}]")
             n = earlier.get(t.count)
             if n is None:
                 self.err(f.line, f"{where}: length field '{t.count}' must be declared "
                                  "earlier in the same struct")
             elif not isinstance(n, Field) or n.type.is_array or n.type.name not in INTS:
                 self.err(f.line, f"{where}: length field '{t.count}' must be u8, u16 or u32")
-            elif n.size_of != f.name:
-                self.err(f.line, f"{where}: length field '{t.count}' must be declared as "
-                                 f"'{t.count}: {n.type.name} = sizeof({f.name});'")
-
-    def size_of(self, st: Struct, f: Field) -> None:
-        where = f"{st.name}.{f.name}"
-        if f.type.is_array or f.type.name not in INTS:
-            self.err(f.line, f"{where}: a sizeof field must be u8, u16 or u32")
-            return
-        target = next((g for g in st.fields
-                       if isinstance(g, Field) and g.name == f.size_of), None)
-        if target is None:
-            self.err(f.line, f"{where}: sizeof({f.size_of}): no field '{f.size_of}' in {st.name}")
-        elif target.type.count != f.name:
-            self.err(f.line, f"{where}: sizeof({f.size_of}): {f.size_of} must be declared "
-                             f"as '{f.size_of}: {target.type.name}[{f.name}];'")
+            elif t.count in lengths:
+                self.err(f.line, f"{where}: length field '{t.count}' already sizes "
+                                 f"'{lengths[t.count]}'")
+            else:
+                lengths[t.count] = f.name
 
     def switch(self, st: Struct, sw: Switch, earlier: dict) -> None:
         where = f"{st.name}.{sw.name}"

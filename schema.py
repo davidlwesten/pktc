@@ -16,9 +16,9 @@ ENDIAN: "big" | "little"
 variants: variant ("," variant)* ","?
 variant: NAME "=" INT
 
-?field: NAME ":" type ("=" "sizeof" "(" NAME ")")? ";"   -> field
-      | NAME ":" "switch" "(" NAME ")" "{" arm+ "}" ";"   -> switch
-      | "pad" "(" INT ")" ";"                            -> pad
+?field: NAME ":" type ";"                               -> field
+      | NAME ":" "switch" "(" NAME ")" "{" arm+ "}" ";" -> switch
+      | "pad" "(" INT ")" ";"                           -> pad
 
 arm: (NAME | WILD) ("," NAME)* "=>" type ","
 WILD: "_"
@@ -45,7 +45,6 @@ class Type:
 class Field:
     name: str
     type: Type
-    size_of: str | None = None
     line: int = dc_field(default=0, repr=False, compare=False)
 
 @dataclass
@@ -111,7 +110,7 @@ class ToAst(Transformer):
     def sized_array(self, c): return Type(c[0], c[1], True)
     def rest_array(self, c): return Type(c[0], "..", True)
     @v_args(meta=True)
-    def field(self, m, c): return Field(c[0], c[1], c[2] if len(c) > 2 else None, m.line)
+    def field(self, m, c): return Field(c[0], c[1], m.line)
     @v_args(meta=True)
     def arm(self, m, c): return Arm(c[:-1], c[-1], m.line)
     @v_args(meta=True)

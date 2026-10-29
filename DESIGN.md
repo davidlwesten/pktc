@@ -33,13 +33,23 @@ The feature set, derived from TFTP and PCP:
 | Fixed byte arrays | `nonce: u8[12];` | PCP (addresses, nonce) |
 | Switch on a tag field | `body: switch (opcode) { RRQ, WRQ => Request, ... };` | both |
 | NUL-terminated string | `filename: cstr;` | TFTP |
-| Length from an earlier field | `len: u16 = sizeof(data); data: u8[len];` | PCP options |
+| Length from an earlier field | `len: u16; data: u8[len];` | PCP options |
 | Rest of message | `data: u8[..];` | TFTP DATA |
 | Repeat until end of message | `options: Option[..];` | both |
 | Pad to N-byte boundary | `pad(4);` | PCP options |
 
 `message` declares a top-level packet; `struct` declares a reusable group of
 fields. An `enum Name : u16 { A = 1, ... }` names tag and code values.
+
+**Length fields are derived, not set.** In `len: u16; data: u8[len];`,
+naming `len` as the array's length is the whole declaration: decode reads
+`len` and takes that many bytes as `data`; encode writes `data.len` into
+`len`, so the two can never disagree. The caller never sets `len`. A
+length is always a plain byte count, which is why only `u8[len]` is
+allowed. Lengths in other units (4-byte words, counts including a header)
+would need expressions and go through the escape hatch. An earlier draft
+spelled this `len: u16 = sizeof(data)`; it was dropped because it repeated
+what `u8[len]` already says, and C's `sizeof` suggested the wrong meaning.
 
 Not supported: little-endian, varints, checksums, arbitrary expressions,
 nested length scopes, optional fields, versioning.
@@ -154,10 +164,9 @@ depends on nothing.
      rejected for now.
    - Arrays: elements are u8/u16/u32, or a struct only in `S[..]` (a list),
      and that struct must not itself run to the end of the message.
-   - Length fields go both ways: `d: u8[n]` needs an earlier
-     `n: u8|u16|u32 = sizeof(d)`, and `sizeof(d)` needs `d` sized by `n`.
-     So encode always knows to compute `n` and decode always knows where
-     `d` ends.
+   - Length fields: `d: u8[n]` needs `n` to be an earlier u8/u16/u32
+     field of the same struct, and `n` may size only one array. Arrays
+     sized by a field must be `u8`.
    - Anything that runs to the end of the message must be last: a `[..]`
      field, a field of a struct that ends that way, or a switch with such
      an arm (including `_`).

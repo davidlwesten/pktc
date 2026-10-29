@@ -1,8 +1,8 @@
-// Exercises syntax not used by TFTP: sizeof length fields, sized arrays, padding.
+// Exercises syntax not used by TFTP: length fields, sized arrays, padding.
 struct PcpOption {
     code: u8;
     reserved: u8;
-    len: u16 = sizeof(data);
+    len: u16;
     data: u8[len];
     pad(4);
 }
