@@ -85,6 +85,12 @@ static size_t tftp_cstr_size(const struct tftp_cstr *v) {
     return v->len + 1;
 }
 
+#define TFTP_CHECK(cond) \
+    do { \
+        if (!(cond)) \
+            return false; \
+    } while (0)
+
 #define TFTP_TRY(expr) \
     do { \
         tftp_status st_ = (expr); \
@@ -95,14 +101,14 @@ static size_t tftp_cstr_size(const struct tftp_cstr *v) {
 /* ---- struct Option ------------------------------------------------------ */
 
 static bool tftp_option_read(struct tftp_rd *r, struct tftp_option *out) {
-    return tftp_rd_cstr(r, &out->name) && tftp_rd_cstr(r, &out->value);
+    TFTP_CHECK(tftp_rd_cstr(r, &out->name));
+    return tftp_rd_cstr(r, &out->value);
 }
 
 static tftp_status tftp_option_write(struct tftp_wr *w,
                                      const struct tftp_option *in) {
     TFTP_TRY(tftp_wr_cstr(w, &in->name));
-    TFTP_TRY(tftp_wr_cstr(w, &in->value));
-    return TFTP_OK;
+    return tftp_wr_cstr(w, &in->value);
 }
 
 static size_t tftp_option_size(const struct tftp_option *in) {
@@ -173,17 +179,16 @@ bool tftp_option_iter_next(struct tftp_option_iter *it,
 /* ---- struct Request ----------------------------------------------------- */
 
 static bool tftp_request_read(struct tftp_rd *r, struct tftp_request *out) {
-    return tftp_rd_cstr(r, &out->filename)
-        && tftp_rd_cstr(r, &out->mode)
-        && tftp_option_list_read(r, &out->options);
+    TFTP_CHECK(tftp_rd_cstr(r, &out->filename));
+    TFTP_CHECK(tftp_rd_cstr(r, &out->mode));
+    return tftp_option_list_read(r, &out->options);
 }
 
 static tftp_status tftp_request_write(struct tftp_wr *w,
                                       const struct tftp_request *in) {
     TFTP_TRY(tftp_wr_cstr(w, &in->filename));
     TFTP_TRY(tftp_wr_cstr(w, &in->mode));
-    TFTP_TRY(tftp_option_list_write(w, &in->options));
-    return TFTP_OK;
+    return tftp_option_list_write(w, &in->options);
 }
 
 static size_t tftp_request_size(const struct tftp_request *in) {
@@ -195,14 +200,14 @@ static size_t tftp_request_size(const struct tftp_request *in) {
 /* ---- struct Data -------------------------------------------------------- */
 
 static bool tftp_data_read(struct tftp_rd *r, struct tftp_data *out) {
-    return tftp_rd_u16(r, &out->block) && tftp_rd_rest(r, &out->data);
+    TFTP_CHECK(tftp_rd_u16(r, &out->block));
+    return tftp_rd_rest(r, &out->data);
 }
 
 static tftp_status tftp_data_write(struct tftp_wr *w,
                                    const struct tftp_data *in) {
     TFTP_TRY(tftp_wr_u16(w, in->block));
-    TFTP_TRY(tftp_wr_raw(w, in->data.ptr, in->data.len));
-    return TFTP_OK;
+    return tftp_wr_raw(w, in->data.ptr, in->data.len);
 }
 
 static size_t tftp_data_size(const struct tftp_data *in) {
@@ -217,8 +222,7 @@ static bool tftp_ack_read(struct tftp_rd *r, struct tftp_ack *out) {
 
 static tftp_status tftp_ack_write(struct tftp_wr *w,
                                   const struct tftp_ack *in) {
-    TFTP_TRY(tftp_wr_u16(w, in->block));
-    return TFTP_OK;
+    return tftp_wr_u16(w, in->block);
 }
 
 static size_t tftp_ack_size(const struct tftp_ack *in) {
@@ -229,14 +233,14 @@ static size_t tftp_ack_size(const struct tftp_ack *in) {
 /* ---- struct Error ------------------------------------------------------- */
 
 static bool tftp_error_read(struct tftp_rd *r, struct tftp_error *out) {
-    return tftp_rd_u16(r, &out->code) && tftp_rd_cstr(r, &out->message);
+    TFTP_CHECK(tftp_rd_u16(r, &out->code));
+    return tftp_rd_cstr(r, &out->message);
 }
 
 static tftp_status tftp_error_write(struct tftp_wr *w,
                                     const struct tftp_error *in) {
     TFTP_TRY(tftp_wr_u16(w, in->code));
-    TFTP_TRY(tftp_wr_cstr(w, &in->message));
-    return TFTP_OK;
+    return tftp_wr_cstr(w, &in->message);
 }
 
 static size_t tftp_error_size(const struct tftp_error *in) {
@@ -251,8 +255,7 @@ static bool tftp_oack_read(struct tftp_rd *r, struct tftp_oack *out) {
 
 static tftp_status tftp_oack_write(struct tftp_wr *w,
                                    const struct tftp_oack *in) {
-    TFTP_TRY(tftp_option_list_write(w, &in->options));
-    return TFTP_OK;
+    return tftp_option_list_write(w, &in->options);
 }
 
 static size_t tftp_oack_size(const struct tftp_oack *in) {
@@ -275,7 +278,7 @@ static bool tftp_packet_body_read(struct tftp_rd *r, struct tftp_packet *out) {
     case TFTP_OPCODE_OACK:
         return tftp_oack_read(r, &out->body.oack);
     default:
-        return false; /* unknown tag */
+        return false; /* unknown tag */;
     }
 }
 
@@ -294,7 +297,7 @@ static tftp_status tftp_packet_body_write(struct tftp_wr *w,
     case TFTP_OPCODE_OACK:
         return tftp_oack_write(w, &in->body.oack);
     default:
-        return TFTP_INVALID; /* unknown tag */
+        return TFTP_INVALID; /* unknown tag */;
     }
 }
 
@@ -312,19 +315,19 @@ static size_t tftp_packet_body_size(const struct tftp_packet *in) {
     case TFTP_OPCODE_OACK:
         return tftp_oack_size(&in->body.oack);
     default:
-        return 0; /* unknown tag: encode fails */
+        return 0; /* unknown tag: encode fails */;
     }
 }
 
 static bool tftp_packet_read(struct tftp_rd *r, struct tftp_packet *out) {
-    return tftp_rd_u16(r, &out->opcode) && tftp_packet_body_read(r, out);
+    TFTP_CHECK(tftp_rd_u16(r, &out->opcode));
+    return tftp_packet_body_read(r, out);
 }
 
 static tftp_status tftp_packet_write(struct tftp_wr *w,
                                      const struct tftp_packet *in) {
     TFTP_TRY(tftp_wr_u16(w, in->opcode));
-    TFTP_TRY(tftp_packet_body_write(w, in));
-    return TFTP_OK;
+    return tftp_packet_body_write(w, in);
 }
 
 static size_t tftp_packet_size(const struct tftp_packet *in) {

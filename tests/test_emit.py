@@ -126,6 +126,82 @@ int main(void) {
 """
 
 
+# Covers what PCP does not: a 16-bit group holding a constant, a 3-bit enum,
+# a 6-bit length and 3-bit flags (all at different shifts), a u24 member, a
+# u16 array, a reserved array, pad() mid-message, and a computed MAX_SIZE.
+BITS = """
+protocol bits;
+
+enum Mode : u3 { OFF = 0, ON = 5 }
+
+message Rec {
+    ver: u4 = 9;
+    mode: Mode;
+    n: u6;
+    flags: u3;
+    id: u24;
+    words: u16[3];
+    _: u8[2];
+    data: u8[n];
+    pad(8);
+    last: u32;
+}
+"""
+
+BITS_TEST = r"""
+#include <stdio.h>
+#include <string.h>
+#include "bits_gen.h"
+
+static int fails;
+#define CHECK(c) do { if (!(c)) { printf("line %d: %s\n", __LINE__, #c); fails++; } } while (0)
+
+static_assert(BITS_REC_MIN_SIZE == 20);  /* 13 + no data, padded to 16, + 4 */
+static_assert(BITS_REC_MAX_SIZE == 84);  /* 13 + 63, padded to 80, + 4 */
+
+int main(void) {
+    /* 9 << 12 | ON << 9 | 5 << 3 | 6 == 0x9a2e */
+    static const uint8_t rec[] = {
+        0x9a, 0x2e, 0x12, 0x34, 0x56, 0x01, 0x02, 0x03, 0x04, 0xff, 0xfe, 0, 0,
+        'a', 'b', 'c', 'd', 'e', 0, 0, 0, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef,
+    };
+    struct bits_rec r;
+    CHECK(bits_rec_decode(&r, rec, sizeof rec) == BITS_OK);
+    CHECK(r.mode == BITS_MODE_ON && r.flags == 6 && r.id == 0x123456);
+    CHECK(r.words[0] == 0x0102 && r.words[2] == 0xfffe);
+    CHECK(r.data.len == 5 && memcmp(r.data.ptr, "abcde", 5) == 0);
+    CHECK(r.last == 0xdeadbeef);
+
+    uint8_t out[128];
+    size_t n = 0;
+    CHECK(bits_rec_encoded_size(&r) == sizeof rec);
+    CHECK(bits_rec_encode(&r, out, sizeof out, &n) == BITS_OK);
+    CHECK(n == sizeof rec && memcmp(out, rec, n) == 0);
+    for (size_t cap = 0; cap < sizeof rec; cap++)
+        CHECK(bits_rec_encode(&r, out, cap, &n) == BITS_NOSPACE);
+
+    uint8_t bad[sizeof rec];
+    memcpy(bad, rec, sizeof bad);
+    bad[0] = 0x8a;  /* ver 8, not 9 */
+    CHECK(bits_rec_decode(&r, bad, sizeof bad) == BITS_INVALID);
+    CHECK(bits_rec_decode(&r, rec, sizeof rec - 1) == BITS_INVALID);
+
+    CHECK(bits_rec_decode(&r, rec, sizeof rec) == BITS_OK);
+    r.flags = 8;  /* too wide for u3 */
+    CHECK(bits_rec_encode(&r, out, sizeof out, &n) == BITS_INVALID);
+    r.flags = 0;
+    static const uint8_t big[64] = { 0 };
+    r.data = (struct bits_bytes){ big, sizeof big };  /* too long for the u6 length */
+    CHECK(bits_rec_encode(&r, out, sizeof out, &n) == BITS_INVALID);
+
+    if (fails)
+        return 1;
+    puts("ok");
+    return 0;
+}
+"""
+
+
 def generate(text: str, source: str = "test.schema") -> tuple[str, str]:
     s = parse(text)
     check(s)
@@ -133,14 +209,20 @@ def generate(text: str, source: str = "test.schema") -> tuple[str, str]:
 
 
 class Golden(unittest.TestCase):
-    def test_tftp_matches_committed(self):
-        d = ROOT / "examples/tftp"
-        name, h, c = compile_schema(d / "tftp.schema")
-        self.assertEqual(name, "tftp")
-        self.assertEqual(h, (d / "tftp_gen.h").read_text(),
-                         "tftp_gen.h is stale: run python3 pktc.py examples/tftp/tftp.schema")
-        self.assertEqual(c, (d / "tftp_gen.c").read_text(),
-                         "tftp_gen.c is stale: run python3 pktc.py examples/tftp/tftp.schema")
+    """The committed example code must be what the generator produces now."""
+    def check_example(self, proto: str):
+        d = ROOT / "examples" / proto
+        name, h, c = compile_schema(d / f"{proto}.schema")
+        self.assertEqual(name, proto)
+        stale = f"is stale: run python3 pktc.py examples/{proto}/{proto}.schema"
+        self.assertEqual(h, (d / f"{proto}_gen.h").read_text(), f"{proto}_gen.h {stale}")
+        self.assertEqual(c, (d / f"{proto}_gen.c").read_text(), f"{proto}_gen.c {stale}")
+
+    def test_tftp(self):
+        self.check_example("tftp")
+
+    def test_pcp(self):
+        self.check_example("pcp")
 
 
 class Output(unittest.TestCase):
@@ -158,14 +240,16 @@ class Output(unittest.TestCase):
         for absent in ("rd_u8", "rd_u32", "rd_cstr", "rd_rest", "wr_raw", "cstr_size"):
             self.assertNotIn(absent, c)
 
-    def test_not_implemented(self):
-        for body in ("a: u8[4];", "n: u8; a: u8[n];", "a: u8; pad(4);"):
-            with self.subTest(body=body), self.assertRaisesRegex(NotImplementedError, "not implemented"):
-                generate(f"protocol p; message M {{ {body} }}")
-        with self.assertRaisesRegex(NotImplementedError, "'_' arm"):
-            generate("""protocol p; enum K : u8 { A = 1 }
-                        message M { k: K; b: switch (k) { A => S, _ => u8[..], }; }
-                        struct S { x: u8; }""")
+    def test_no_max_size_when_unbounded(self):
+        h, _ = generate(DEMO)
+        self.assertIn("DEMO_HELLO_MIN_SIZE", h)
+        self.assertNotIn("DEMO_HELLO_MAX_SIZE", h)
+
+    def test_lines_fit(self):
+        for text in (DEMO, BITS):
+            h, c = generate(text)
+            long = [l for l in (h + c).splitlines() if len(l) > 79]
+            self.assertEqual(long, [])
 
 
 @unittest.skipUnless(HAVE_GCC, "gcc not found")
@@ -186,11 +270,24 @@ class Compiles(unittest.TestCase):
                                  ["t.c", "demo_gen.c"])
         self.assertEqual(out.strip(), "ok")
 
-    def test_tftp(self):
-        d = ROOT / "examples/tftp"
-        files = {n: (d / n).read_text() for n in ("tftp_gen.h", "tftp_gen.c", "test_tftp.c")}
-        out = self.build_and_run(files, ["test_tftp.c", "tftp_gen.c"])
+    def test_bits(self):
+        h, c = generate(BITS, "bits.schema")
+        out = self.build_and_run({"bits_gen.h": h, "bits_gen.c": c, "t.c": BITS_TEST},
+                                 ["t.c", "bits_gen.c"])
         self.assertEqual(out.strip(), "ok")
+
+    def run_example(self, proto: str):
+        d = ROOT / "examples" / proto
+        names = (f"{proto}_gen.h", f"{proto}_gen.c", f"test_{proto}.c")
+        files = {n: (d / n).read_text() for n in names}
+        out = self.build_and_run(files, [f"test_{proto}.c", f"{proto}_gen.c"])
+        self.assertEqual(out.strip(), "ok")
+
+    def test_tftp(self):
+        self.run_example("tftp")
+
+    def test_pcp(self):
+        self.run_example("pcp")
 
 
 if __name__ == "__main__":

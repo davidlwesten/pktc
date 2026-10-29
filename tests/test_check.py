@@ -6,7 +6,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from check import SchemaError, check, snake  # noqa: E402
+from check import SchemaError, check, size_bounds, snake  # noqa: E402
 from schema import parse  # noqa: E402
 
 HEADER = "protocol p;\n"
@@ -115,7 +115,7 @@ class Invalid(unittest.TestCase):
         self.assertError(HEADER + "message M { a: u8[0]; }", "at least 1")
 
     def test_array_of_cstr(self):
-        self.assertError(HEADER + "message M { a: cstr[..]; }", "arrays of cstr")
+        self.assertError(HEADER + "message M { a: cstr[..]; }", "array elements must be")
 
     def test_fixed_array_of_structs(self):
         self.assertError(HEADER + "message M { a: S[3]; } struct S { b: u8; }",
@@ -140,10 +140,10 @@ class Invalid(unittest.TestCase):
         self.assertError(HEADER + "message M { d: u8[n]; n: u8; }", "declared earlier")
 
     def test_length_field_not_int(self):
-        self.assertError(HEADER + "message M { n: cstr; d: u8[n]; }", "must be u8, u16 or u32")
+        self.assertError(HEADER + "message M { n: cstr; d: u8[n]; }", "must be an integer")
 
     def test_length_field_array(self):
-        self.assertError(HEADER + "message M { n: u8[2]; d: u8[n]; }", "must be u8, u16 or u32")
+        self.assertError(HEADER + "message M { n: u8[2]; d: u8[n]; }", "must be an integer")
 
     def test_length_field_sizes_two_arrays(self):
         self.assertError(HEADER + "message M { n: u8; a: u8[n]; b: u8[n]; }",
@@ -232,8 +232,91 @@ class Invalid(unittest.TestCase):
             enum A_B : u8 { C = 1 }
             message M { a: A; b: A_B; }""", "<PROTO>_A_B_C")
 
+    # bitfields
+    def test_bitfields_fill_bytes(self):
+        self.assertError(HEADER + "message M { a: u3; b: u4; c: cstr; }", "whole bytes")
+
+    def test_bitfields_at_end(self):
+        self.assertError(HEADER + "message M { a: u8; b: u4; }", "whole bytes")
+
+    def test_bit_group_too_wide(self):
+        self.assertError(HEADER + "message M { a: u4; b: u32; c: u4; }", "more than 32 bits")
+
+    def test_enum_on_bits_fits(self):
+        self.assertError(HEADER + "enum E : u3 { A = 8 } message M { e: E; _: u5; }",
+                         "does not fit in u3")
+
+    def test_bad_int_width(self):
+        self.assertError(HEADER + "message M { a: u33; }", "unknown type 'u33'")
+
+    def test_array_of_bits(self):
+        self.assertError(HEADER + "message M { a: u4[2]; }", "array elements must be")
+
+    # constant and reserved fields
+    def test_const_fits(self):
+        self.assertError(HEADER + "message M { a: u8; r: u1 = 2; _: u7; }", "does not fit in u1")
+
+    def test_const_not_int(self):
+        self.assertError(HEADER + "message M { a: u8; c: cstr = 1; }", "only an integer field")
+
+    def test_reserved_not_int(self):
+        self.assertError(HEADER + "message M { a: u8; _: cstr; }", "reserved field must be")
+
+    def test_reserved_names_may_repeat(self):
+        self.assertEqual(errors(HEADER + "message M { a: u8; _: u8; _: u16[2]; }"), [])
+
+    def test_constant_length_field(self):
+        self.assertError(HEADER + "message M { n: u8 = 4; d: u8[n]; }", "cannot be constant")
+
+    def test_nothing_to_store(self):
+        self.assertError(HEADER + "message M { v: u8 = 2; _: u8; }", "no fields to store")
+
+    # declarations: const, max
+    def test_const_decl_collision(self):
+        self.assertError(HEADER + "const OK = 1; message M { a: u8; }", "<PROTO>_OK")
+
+    def test_max_on_struct(self):
+        self.assertError(HEADER + "message M { a: u8; } struct S max 4 { a: u8; }",
+                         "only a message")
+
+    def test_max_below_min(self):
+        self.assertError(HEADER + "message M max 3 { a: u32; rest: u8[..]; }",
+                         "less than its minimum size 4")
+
+    def test_max_without_effect(self):
+        self.assertError(HEADER + "message M max 8 { a: u32; }", "has no effect")
+
+    def test_max_ok(self):
+        self.assertEqual(errors(HEADER + "message M max 100 { a: u32; rest: u8[..]; }"), [])
+
     def test_reports_all_errors(self):
         self.assertEqual(len(errors(HEADER + "message M { a: Nope; b: Nada; }")), 2)
+
+
+class Bounds(unittest.TestCase):
+    def bounds(self, text):
+        s = parse(HEADER + text)
+        check(s)
+        return size_bounds(s)
+
+    def test_tftp(self):
+        b = size_bounds(parse((ROOT / "examples/tftp/tftp.schema").read_text()))
+        self.assertEqual(b["Packet"], (2, None))
+        self.assertEqual(b["Ack"], (2, 2))
+
+    def test_fixed(self):
+        self.assertEqual(self.bounds("message M { a: u4; b: u12; c: u8[3]; d: u32; }")["M"],
+                         (9, 9))
+
+    def test_sized_and_pad(self):
+        b = self.bounds("message M { c: u8; n: u8; d: u8[n]; pad(4); }")
+        self.assertEqual(b["M"], (4, 260))  # 2 + 255 = 257, rounded up to 260
+
+    def test_switch(self):
+        b = self.bounds("""enum K : u8 { A = 1, B = 2 }
+            message M { k: K; body: switch (k) { A => X, B => Y, }; }
+            struct X { x: u8; } struct Y { y: u32; }""")
+        self.assertEqual(b["M"], (2, 5))
 
 
 class Snake(unittest.TestCase):

@@ -2,11 +2,12 @@
 import re
 from schema import Schema, Struct, Field, Switch, Pad, Type
 
-INTS = {"u8": 1, "u16": 2, "u32": 4}
-BUILTINS = set(INTS) | {"cstr"}
+BYTE_INTS = {"u8": 1, "u16": 2, "u32": 4}   # allowed as array elements
 
 # Identifiers the generated C uses for its own types, as <proto>_<name>.
 RESERVED_TYPES = {"status", "cstr", "bytes", "rd", "wr"}
+# ... and for its own constants and macros, as <PROTO>_<NAME>.
+RESERVED_CONSTS = {"OK", "INVALID", "NOSPACE", "TRY", "CHECK", "CSTR", "GEN_H"}
 
 C_KEYWORDS = set("""
     alignas alignof auto bool break case char const constexpr continue default
@@ -17,11 +18,28 @@ C_KEYWORDS = set("""
 """.split())
 
 
+def int_bits(name: str) -> int | None:
+    """Width of a built-in integer type u1..u32, or None."""
+    m = re.fullmatch(r"u([1-9][0-9]?)", name)
+    return int(m[1]) if m and int(m[1]) <= 32 else None
+
+
 def snake(name: str) -> str:
     """CamelCase -> snake_case: OptionAck -> option_ack, HTTPServer -> http_server."""
     s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
     s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", s)
     return s.lower()
+
+
+def is_int_field(f, enums) -> bool:
+    """A scalar integer or enum field: part of a bit group."""
+    return isinstance(f, Field) and not f.type.is_array and \
+        (int_bits(f.type.name) is not None or f.type.name in enums)
+
+
+def field_bits(f: Field, enums) -> int:
+    t = f.type.name
+    return int_bits(t) if t not in enums else int_bits(enums[t].base)
 
 
 class SchemaError(Exception):
@@ -35,6 +53,61 @@ def check(s: Schema) -> None:
     errors = _Checker(s).run()
     if errors:
         raise SchemaError(errors)
+
+
+def size_bounds(s: Schema) -> dict[str, tuple[int, int | None]]:
+    """(min, max) encoded size in bytes of every struct; max None = unbounded.
+    Only valid for a schema that check() accepted."""
+    enums = {e.name: e for e in s.enums}
+    structs = {st.name: st for st in s.structs}
+    memo: dict[str, tuple[int, int | None]] = {}
+
+    def add(a, b):
+        return None if a is None or b is None else a + b
+
+    def roundup(n, align):
+        return None if n is None else -(-n // align) * align
+
+    def type_bits(t: Type) -> tuple[int, int | None]:
+        if not t.is_array:
+            if t.name == "cstr":
+                return 8, None
+            if t.name in structs:
+                lo, hi = struct(t.name)
+                return 8 * lo, None if hi is None else 8 * hi
+            return 0, 0  # integers are counted by the caller
+        if t.count == "..":
+            return 0, None
+        elem = 8 * BYTE_INTS[t.name]
+        if isinstance(t.count, int):
+            return elem * t.count, elem * t.count
+        return 0, None  # sized: refined by the caller, which knows the length field
+
+    def struct(name: str) -> tuple[int, int | None]:
+        if name in memo:
+            return memo[name]
+        st = structs[name]
+        lo, hi = 0, 0
+        for f in st.fields:
+            if isinstance(f, Pad):
+                lo, hi = roundup(lo, 8 * f.align), roundup(hi, 8 * f.align)
+            elif isinstance(f, Switch):
+                arms = [(0, None) if "_" in a.tags else type_bits(a.type) for a in f.arms]
+                lo += min(a[0] for a in arms)
+                hi = add(hi, None if any(a[1] is None for a in arms) else max(a[1] for a in arms))
+            elif is_int_field(f, enums):
+                w = field_bits(f, enums)
+                lo, hi = lo + w, add(hi, w)
+            elif isinstance(f.type.count, str) and f.type.count != "..":
+                n = next(g for g in st.fields if isinstance(g, Field) and g.name == f.type.count)
+                hi = add(hi, 8 * ((1 << field_bits(n, enums)) - 1))
+            else:
+                flo, fhi = type_bits(f.type)
+                lo, hi = lo + flo, add(hi, fhi)
+        memo[name] = (lo // 8, None if hi is None else hi // 8)
+        return memo[name]
+
+    return {name: struct(name) for name in structs}
 
 
 class _Checker:
@@ -56,6 +129,8 @@ class _Checker:
             self.struct(st)
         self.cycles()
         self.c_names()
+        if not self.errors:  # needs a well-formed schema
+            self.max_sizes()
         return sorted(self.errors)
 
     # ---- declarations ----------------------------------------------------
@@ -67,7 +142,7 @@ class _Checker:
         if s.endian != "big":
             self.err(1, f"endian {s.endian} is not supported")
         for d in [*s.enums, *s.structs]:
-            if d.name in BUILTINS:
+            if d.name == "cstr" or int_bits(d.name) is not None:
                 self.err(d.line, f"'{d.name}' is a built-in type")
             elif d.name in self.enums or d.name in self.structs:
                 self.err(d.line, f"'{d.name}' is declared twice")
@@ -77,16 +152,16 @@ class _Checker:
             self.err(1, "no message declared")
 
     def enum(self, e) -> None:
-        if e.base not in INTS:
-            self.err(e.line, f"enum {e.name}: base type must be u8, u16 or u32, not '{e.base}'")
+        bits = int_bits(e.base)
+        if bits is None:
+            self.err(e.line, f"enum {e.name}: base type must be u1..u32, not '{e.base}'")
             return
-        limit = 1 << (8 * INTS[e.base])
         names, values = set(), {}
         for v in e.variants:
             if v.name in names:
                 self.err(v.line, f"enum {e.name}: variant {v.name} declared twice")
             names.add(v.name)
-            if v.value >= limit:
+            if v.value >= 1 << bits:
                 self.err(v.line, f"enum {e.name}: {v.name} = {v.value} does not fit in {e.base}")
             if v.value in values:
                 self.err(v.line, f"enum {e.name}: {v.name} has the same value as {values[v.value]}")
@@ -98,11 +173,14 @@ class _Checker:
         if not st.fields:
             self.err(st.line, f"{st.name}: empty structs are not supported")
             return
+        if st.max is not None and not st.is_message:
+            self.err(st.line, f"{st.name}: only a message can declare 'max'")
         seen: dict[str, Field | Switch] = {}
         lengths: dict[str, str] = {}  # length field -> the array it sizes
         last = len(st.fields) - 1
         for i, f in enumerate(st.fields):
-            if not isinstance(f, Pad):
+            named = not isinstance(f, Pad) and f.name != "_"
+            if named:
                 if f.name in seen:
                     self.err(f.line, f"{st.name}: field '{f.name}' declared twice")
                 if f.name in C_KEYWORDS:
@@ -117,42 +195,84 @@ class _Checker:
                 what = "'[..]' field" if isinstance(f, Field) and f.type.count == ".." \
                     else "field that runs to the end of the message"
                 self.err(f.line, f"{st.name}.{f.name}: a {what} must be the last field")
-            if not isinstance(f, Pad):
+            if named:
                 seen[f.name] = f
+        self.bit_groups(st)
+        stored = [f for f in st.fields if isinstance(f, Switch) or
+                  isinstance(f, Field) and f.name != "_" and f.const is None
+                  and f.name not in lengths]
+        if not stored:
+            self.err(st.line, f"{st.name}: has no fields to store (only reserved, constant or "
+                              "length fields); not supported yet")
 
     def field(self, st: Struct, f: Field, earlier: dict, lengths: dict) -> None:
         where = f"{st.name}.{f.name}"
         t = f.type
         if not self.resolve(where, t, f.line):
             return
+        if f.const is not None:
+            bits = int_bits(t.name)
+            if t.is_array or bits is None:
+                self.err(f.line, f"{where}: only an integer field can be constant")
+            elif f.const >= 1 << bits:
+                self.err(f.line, f"{where}: constant {f.const} does not fit in {t.name}")
+        elif f.name == "_" and not (int_bits(t.name) is not None and
+                                    (not t.is_array or isinstance(t.count, int))):
+            self.err(f.line, f"{where}: a reserved field must be an integer or a fixed array")
         if not t.is_array:
             return
         elem_is_struct = t.name in self.structs
-        if t.name in self.enums or t.name == "cstr":
-            self.err(f.line, f"{where}: arrays of {t.name} are not supported")
-        elif elem_is_struct and t.count != "..":
-            self.err(f.line, f"{where}: an array of structs must be '{t.name}[..]'")
-        elif elem_is_struct and self.struct_is_open(t.name):
-            self.err(f.line, f"{where}: {t.name} runs to the end of the message, "
-                             "so it cannot be a list element")
+        if elem_is_struct:
+            if t.count != "..":
+                self.err(f.line, f"{where}: an array of structs must be '{t.name}[..]'")
+            elif self.struct_is_open(t.name):
+                self.err(f.line, f"{where}: {t.name} runs to the end of the message, "
+                                 "so it cannot be a list element")
+        elif t.name not in BYTE_INTS:
+            self.err(f.line, f"{where}: array elements must be u8, u16, u32 or a struct")
         if isinstance(t.count, int) and t.count < 1:
             self.err(f.line, f"{where}: array length must be at least 1")
         if isinstance(t.count, str) and t.count != "..":
             # The length field holds the array's size in bytes; encode
             # computes it, so the caller never sets it.
-            if t.name in INTS and t.name != "u8":
+            if t.name in BYTE_INTS and t.name != "u8":
                 self.err(f.line, f"{where}: an array sized by a field must be u8[{t.count}]")
             n = earlier.get(t.count)
             if n is None:
                 self.err(f.line, f"{where}: length field '{t.count}' must be declared "
                                  "earlier in the same struct")
-            elif not isinstance(n, Field) or n.type.is_array or n.type.name not in INTS:
-                self.err(f.line, f"{where}: length field '{t.count}' must be u8, u16 or u32")
+            elif not isinstance(n, Field) or n.type.is_array or int_bits(n.type.name) is None:
+                self.err(f.line, f"{where}: length field '{t.count}' must be an integer")
+            elif n.const is not None:
+                self.err(f.line, f"{where}: length field '{t.count}' cannot be constant")
             elif t.count in lengths:
                 self.err(f.line, f"{where}: length field '{t.count}' already sizes "
                                  f"'{lengths[t.count]}'")
             else:
                 lengths[t.count] = f.name
+
+    def bit_groups(self, st: Struct) -> None:
+        """Consecutive integer fields are packed MSB-first into groups that
+        end on a byte boundary and span at most 32 bits."""
+        acc, start = 0, None
+        for f in st.fields:
+            if is_int_field(f, self.enums):
+                if acc == 0:
+                    start = f
+                acc += field_bits(f, self.enums)
+                if acc > 32:
+                    self.err(start.line, f"{st.name}.{start.name}: bitfields from here span more "
+                                         "than 32 bits before reaching a byte boundary")
+                    acc = 0
+                elif acc % 8 == 0:  # a byte boundary closes the group
+                    acc = 0
+            elif acc:
+                self.err(start.line, f"{st.name}.{start.name}: bitfields from here must fill "
+                                     "whole bytes")
+                acc = 0
+        if acc:
+            self.err(start.line, f"{st.name}.{start.name}: bitfields from here must fill "
+                                 "whole bytes")
 
     def switch(self, st: Struct, sw: Switch, earlier: dict) -> None:
         where = f"{st.name}.{sw.name}"
@@ -195,7 +315,7 @@ class _Checker:
                                "which an arm type named Unknown already uses")
 
     def resolve(self, where: str, t: Type, line: int) -> bool:
-        if t.name in BUILTINS or t.name in self.enums:
+        if t.name == "cstr" or int_bits(t.name) is not None or t.name in self.enums:
             return True
         st = self.structs.get(t.name)
         if st is None:
@@ -255,6 +375,18 @@ class _Checker:
             if name not in state:
                 visit(name, [name])
 
+    def max_sizes(self) -> None:
+        bounds = size_bounds(self.s)
+        for st in self.s.structs:
+            if st.max is None:
+                continue
+            lo, hi = bounds[st.name]
+            if st.max < lo:
+                self.err(st.line, f"{st.name}: max {st.max} is less than its minimum size {lo}")
+            elif hi is not None and st.max >= hi:
+                self.err(st.line, f"{st.name}: max {st.max} has no effect: "
+                                  f"it can never exceed {hi} bytes")
+
     def c_names(self) -> None:
         """Distinct schema names must stay distinct once turned into C names."""
         types: dict[str, str] = {r: "the generated code" for r in RESERVED_TYPES}
@@ -273,14 +405,21 @@ class _Checker:
                 elif isinstance(f, Switch):
                     claim(f"{snake(st.name)}_{f.name}", f"switch {st.name}.{f.name}", f.line)
 
-        consts: dict[str, str] = {c: "the generated code" for c in ("OK", "INVALID", "NOSPACE")}
+        consts: dict[str, str] = {c: "the generated code" for c in RESERVED_CONSTS}
+        def claim_const(c: str, owner: str, line: int) -> None:
+            if c in consts and consts[c] != owner:
+                self.err(line, f"{owner}: C constant <PROTO>_{c} is also used by {consts[c]}")
+            consts.setdefault(c, owner)
+
+        for c in self.s.consts:
+            claim_const(snake(c.name).upper(), f"const {c.name}", c.line)
         for e in self.enums.values():
             for v in e.variants:
-                c = f"{snake(e.name)}_{snake(v.name)}".upper()
-                owner = f"{e.name}.{v.name}"
-                if c in consts and consts[c] != owner:
-                    self.err(v.line, f"{owner}: C constant <PROTO>_{c} is also used by {consts[c]}")
-                consts.setdefault(c, owner)
+                claim_const(f"{snake(e.name)}_{snake(v.name)}".upper(), f"{e.name}.{v.name}", v.line)
+        for st in self.structs.values():
+            if st.is_message:
+                for suffix in ("_MIN_SIZE", "_MAX_SIZE"):
+                    claim_const(snake(st.name).upper() + suffix, f"message {st.name}", st.line)
 
 
 if __name__ == "__main__":

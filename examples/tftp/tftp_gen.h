@@ -9,7 +9,8 @@
 typedef enum {
     TFTP_OK = 0,
     /* decode: malformed or truncated input;
-     * encode: unencodable input (unknown tag, NUL in cstr) */
+     * encode: unencodable input (unknown tag, value too wide for its field,
+     *         NUL in cstr, message over its declared maximum size) */
     TFTP_INVALID,
     /* encode: output buffer too small */
     TFTP_NOSPACE,
@@ -32,7 +33,7 @@ struct tftp_cstr {
     size_t len;
 };
 
-/* u8[..]: points into the buffer. */
+/* u8[..] and u8[len]: points into the buffer. */
 struct tftp_bytes {
     const uint8_t *ptr;
     size_t len;
@@ -101,6 +102,9 @@ struct tftp_packet {
         struct tftp_oack    oack;     /* OACK */
     } body;
 };
+
+/* Size limits of an encoded Packet, in bytes. */
+#define TFTP_PACKET_MIN_SIZE 2
 
 /* Decode one Packet. Views in *out borrow buf: keep buf alive and
  * unchanged while using them. */

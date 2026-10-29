@@ -1,4 +1,15 @@
-// Exercises syntax not used by TFTP: length fields, sized arrays, padding.
+// Exercises syntax not used by TFTP: length fields, sized arrays, padding,
+// bitfields, constant and reserved fields, const declarations and max.
+const PORT = 5351;
+
+message Header max 64 {
+    version: u8;
+    r: u1 = 0;
+    opcode: u7;
+    _: u24;
+    rest: PcpOption[..];
+}
+
 struct PcpOption {
     code: u8;
     reserved: u8;

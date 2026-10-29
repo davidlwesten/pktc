@@ -5,10 +5,11 @@ from lark import Lark, Transformer, v_args
 GRAMMAR = r"""
 start: decl*
 
-?decl: "protocol" NAME ";"                      -> protocol
-     | "endian" ENDIAN ";"                      -> endian
-     | "enum" NAME ":" NAME "{" variants "}"    -> enum
-     | KIND NAME "{" field* "}"                 -> struct
+?decl: "protocol" NAME ";"                         -> protocol
+     | "endian" ENDIAN ";"                         -> endian
+     | "const" NAME "=" INT ";"                    -> const
+     | "enum" NAME ":" NAME "{" variants "}"       -> enum
+     | KIND NAME ("max" INT)? "{" field* "}"       -> struct
 
 KIND: "message" | "struct"
 ENDIAN: "big" | "little"
@@ -16,7 +17,7 @@ ENDIAN: "big" | "little"
 variants: variant ("," variant)* ","?
 variant: NAME "=" INT
 
-?field: NAME ":" type ";"                               -> field
+?field: (NAME | WILD) ":" type ("=" INT)? ";"            -> field
       | NAME ":" "switch" "(" NAME ")" "{" arm+ "}" ";" -> switch
       | "pad" "(" INT ")" ";"                           -> pad
 
@@ -43,8 +44,9 @@ class Type:
 
 @dataclass
 class Field:
-    name: str
+    name: str                  # "_" for a reserved field
     type: Type
+    const: int | None = None   # `name: type = const;`
     line: int = dc_field(default=0, repr=False, compare=False)
 
 @dataclass
@@ -83,6 +85,13 @@ class Struct:
     name: str
     is_message: bool
     fields: list
+    max: int | None = None     # `message M max N`
+    line: int = dc_field(default=0, repr=False, compare=False)
+
+@dataclass
+class Const:
+    name: str
+    value: int
     line: int = dc_field(default=0, repr=False, compare=False)
 
 @dataclass
@@ -91,6 +100,7 @@ class Schema:
     endian: str
     enums: list[Enum]
     structs: list[Struct]
+    consts: list[Const] = dc_field(default_factory=list)
 
 class ToAst(Transformer):
     def NAME(self, t): return str(t)
@@ -104,13 +114,18 @@ class ToAst(Transformer):
     @v_args(meta=True)
     def enum(self, m, c): return Enum(c[0], c[1], c[2], m.line)
     @v_args(meta=True)
-    def struct(self, m, c): return Struct(c[1], str(c[0]) == "message", c[2:], m.line)
+    def struct(self, m, c):
+        max_ = c[2] if len(c) > 2 and isinstance(c[2], int) else None
+        fields = c[3:] if max_ is not None else c[2:]
+        return Struct(c[1], str(c[0]) == "message", fields, max_, m.line)
+    @v_args(meta=True)
+    def const(self, m, c): return Const(c[0], c[1], m.line)
     def scalar(self, c): return Type(c[0])
     def fixed_array(self, c): return Type(c[0], c[1], True)
     def sized_array(self, c): return Type(c[0], c[1], True)
     def rest_array(self, c): return Type(c[0], "..", True)
     @v_args(meta=True)
-    def field(self, m, c): return Field(c[0], c[1], m.line)
+    def field(self, m, c): return Field(c[0], c[1], c[2] if len(c) > 2 else None, m.line)
     @v_args(meta=True)
     def arm(self, m, c): return Arm(c[:-1], c[-1], m.line)
     @v_args(meta=True)
@@ -122,6 +137,7 @@ class ToAst(Transformer):
         for d in decls:
             if isinstance(d, Enum): s.enums.append(d)
             elif isinstance(d, Struct): s.structs.append(d)
+            elif isinstance(d, Const): s.consts.append(d)
             else: setattr(s, d[0], d[1])
         return s
 

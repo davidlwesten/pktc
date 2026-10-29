@@ -1,10 +1,20 @@
 """Emit: IR -> <proto>_gen.h and <proto>_gen.c."""
+import re
 from string import Template
 
-from ir import Proto, StructDecl, EnumDecl, Int, Cstr, Rest, Sub, List, Dispatch
+from ir import (Proto, StructDecl, EnumDecl, Group, Bits, Cstr, Rest, Bytes, Fixed, Pad,
+                Sub, List, Dispatch)
 
 WIDTH = 79
-C_INT = {1: "uint8_t", 2: "uint16_t", 4: "uint32_t"}
+
+
+def c_uint(bits: int) -> str:
+    """Smallest uintN_t holding `bits` bits."""
+    return "uint8_t" if bits <= 8 else "uint16_t" if bits <= 16 else "uint32_t"
+
+
+def c_bits(bits: int) -> int:
+    return 8 if bits <= 8 else 16 if bits <= 16 else 32
 
 
 # ---- formatting helpers -------------------------------------------------------
@@ -27,13 +37,32 @@ def sig(head: str, params: list[str], end: str) -> str:
     return "\n".join(lines)
 
 
-def ret(terms: list[str], op: str) -> str:
-    """`return a op b op c;`, one term per line if it does not fit."""
-    one = f"    return {f' {op} '.join(terms)};"
+def sum_expr(lead: str, terms: list[str], end: str) -> str:
+    """`<lead>a + b + c<end>`, one term per line if it does not fit."""
+    one = f"{lead}{' + '.join(terms)}{end}"
     if len(one) <= WIDTH:
         return one
-    pad = " " * (11 - len(op) - 1)  # operands line up under the first term
-    return "\n".join([f"    return {terms[0]}"] + [f"{pad}{op} {t}" for t in terms[1:]]) + ";"
+    pad = " " * (len(lead) - 2)  # operands line up under the first term
+    return "\n".join([f"{lead}{terms[0]}"] + [f"{pad}+ {t}" for t in terms[1:]]) + end
+
+
+def join_wrapped(lead: str, terms: list[str], sep: str, end: str) -> str:
+    """`<lead>a<sep>b<sep>c<end>`, wrapped at WIDTH with terms aligned after lead."""
+    lines, cur = [], lead + terms[0]
+    for i, t in enumerate(terms[1:], 2):
+        tail = end if i == len(terms) else sep.rstrip()
+        if len(cur) + len(sep) + len(t) + len(tail) <= WIDTH:
+            cur += sep + t
+        else:
+            lines.append(cur + sep.rstrip())
+            cur = " " * len(lead) + t
+    return "\n".join(lines + [cur + end])
+
+
+def fold(terms: list[int | str]) -> list[str]:
+    """Add up the constant terms and put them first: [2, 'x', 4] -> ['6', 'x']."""
+    fixed = sum(t for t in terms if isinstance(t, int))
+    return ([str(fixed)] if fixed else []) + [t for t in terms if isinstance(t, str)]
 
 
 def rule(title: str) -> str:
@@ -56,6 +85,15 @@ def table(rows: list[tuple[str, str]], sep: str) -> list[str]:
     return [f"{a.ljust(w)}{sep}{b}" for a, b in rows]
 
 
+def finish(lines: list[str], macro: str, last: str) -> list[str]:
+    """Turn a trailing `    MACRO(expr);` into `    return expr;`, else append `last`."""
+    if lines:
+        m = re.fullmatch(rf"    {macro}\((.*)\);", lines[-1])
+        if m:
+            return lines[:-1] + [f"    return {m[1]};"]
+    return lines + [last]
+
+
 class Emitter:
     def __init__(self, proto: Proto):
         self.proto = proto
@@ -63,9 +101,8 @@ class Emitter:
         self.P = proto.name.upper()
         ops = [op for st in proto.structs for op in st.ops]
         self.uses_cstr = any(isinstance(op, Cstr) for op in ops)
-        self.uses_rest = any(isinstance(op, Rest) for op in ops)
-        self.uses_list = any(isinstance(op, List) for op in ops)
-        self.int_sizes = sorted({op.size for op in ops if isinstance(op, Int)})
+        self.uses_bytes = any(isinstance(op, (Rest, Bytes)) or
+                              isinstance(op, Dispatch) and op.fallback for op in ops)
 
     def t(self, text: str, **kw) -> str:
         return Template(text).substitute(p=self.p, P=self.P, **kw)
@@ -78,13 +115,18 @@ class Emitter:
                f"#ifndef {guard}", f"#define {guard}", "",
                "#include <stdbool.h>", "#include <stddef.h>", "#include <stdint.h>", "",
                self.t(H_STATUS)]
+        if self.proto.consts:
+            rows = [(f"#define {self.P}_{n}", str(v)) for n, v in self.proto.consts]
+            out += [f"/* Constants from {self.proto.source}. */", *table(rows, " "), ""]
         out += [self.h_enum(e) for e in self.proto.enums]
         if self.uses_cstr:
             out.append(self.t(H_CSTR))
-        if self.uses_rest:
+        if self.uses_bytes:
             out.append(self.t(H_BYTES))
         for st in self.proto.structs:
             out.append(self.h_struct(st))
+            if st.is_message:
+                out.append(self.h_sizes(st))
             if st.is_list_elem:
                 out.append(self.t(H_LIST, s=st.name, S=st.schema_name))
         for st in self.proto.structs:
@@ -95,25 +137,25 @@ class Emitter:
                 out.append(self.h_iter_api(st))
         if self.uses_cstr:
             out.append(self.t(H_CSTR_MACRO))
-        out.append(f"#endif")
+        out.append("#endif")
         return "\n".join(out) + "\n"
 
     def h_enum(self, e: EnumDecl) -> str:
         rows = [(f"    {self.P}_{e.name.upper()}_{v}", f" {n},") for v, n in e.variants]
         return "\n".join([f"/* {e.decl} */",
-                          f"enum {self.p}_{e.name} : {C_INT[e.size]} {{",
+                          f"enum {self.p}_{e.name} : {c_uint(e.width)} {{",
                           *table(rows, " ="), "};", ""])
 
-    def c_type(self, op) -> str:
+    def member_type(self, op) -> str:
         p = self.p
         match op:
-            case Int(enum=None):
-                return C_INT[op.size]
-            case Int():
+            case Bits(enum=None):
+                return c_uint(op.width)
+            case Bits():
                 return f"enum {p}_{op.enum}"
             case Cstr():
                 return f"struct {p}_cstr"
-            case Rest():
+            case Rest() | Bytes():
                 return f"struct {p}_bytes"
             case Sub():
                 return f"struct {p}_{op.struct}"
@@ -122,20 +164,47 @@ class Emitter:
         raise AssertionError(op)
 
     def h_struct(self, st: StructDecl) -> str:
+        p = self.p
         tags = {op.tag: op.field for op in st.ops if isinstance(op, Dispatch)}
-        out = [decl_comment(st.decl), f"struct {self.p}_{st.name} {{"]
+        out = [decl_comment(st.decl), f"struct {p}_{st.name} {{"]
         for op in st.ops:
-            if isinstance(op, Dispatch):
-                rows = [(f"        struct {self.p}_{a.struct}", f" {a.member};") for a in op.arms]
-                rows = table(rows, "")
-                rows = [(r, f"  /* {', '.join(a.tags)} */") for r, a in zip(rows, op.arms)]
-                out += ["    union {", *table(rows, ""), f"    }} {op.field};"]
-            elif op.field in tags:
-                out.append(f"    {self.c_type(op)} {op.field};  /* selects {tags[op.field]} */")
-            else:
-                out.append(f"    {self.c_type(op)} {op.field};")
+            match op:
+                case Group():
+                    for b in op.bits:
+                        if b.field is None:
+                            continue
+                        line = f"    {self.member_type(b)} {b.field};"
+                        if b.field in tags:
+                            line += f"  /* selects {tags[b.field]} */"
+                        out.append(line)
+                case Fixed(field=None) | Pad():
+                    pass
+                case Fixed():
+                    out.append(f"    {c_uint(8 * op.elem)} {op.field}[{op.count}];")
+                case Dispatch():
+                    arms = [(f"struct {p}_{a.struct}", a.member, ", ".join(a.tags))
+                            for a in op.arms]
+                    if op.fallback:
+                        arms.append((f"struct {p}_bytes", "unknown", "any other value"))
+                    rows = table([(f"        {t}", f" {m};") for t, m, _ in arms], "")
+                    rows = table([(r, f"  /* {c} */") for r, (_, _, c) in zip(rows, arms)], "")
+                    out += ["    union {", *rows, f"    }} {op.field};"]
+                case _:
+                    out.append(f"    {self.member_type(op)} {op.field};")
         out += ["};", ""]
         return "\n".join(out)
+
+    def h_sizes(self, st: StructDecl) -> str:
+        m = f"{self.P}_{st.name.upper()}"
+        if st.max_declared:
+            comment = [f"/* Size limits of an encoded {st.schema_name}, in bytes. Decode and "
+                       "encode", f" * reject a {st.schema_name} larger than {m}_MAX_SIZE. */"]
+        else:
+            comment = [f"/* Size limits of an encoded {st.schema_name}, in bytes. */"]
+        rows = [(f"#define {m}_MIN_SIZE", str(st.min_size))]
+        if st.max_size is not None:
+            rows.append((f"#define {m}_MAX_SIZE", str(st.max_size)))
+        return "\n".join([*comment, *table(rows, " "), ""])
 
     def h_message_api(self, st: StructDecl) -> str:
         p, m = self.p, f"{self.p}_{st.name}"
@@ -165,75 +234,180 @@ class Emitter:
     # ---- source --------------------------------------------------------------
 
     def source(self) -> str:
-        out = [f"/* Generated from {self.proto.source} -- do not edit. */",
-               f'#include "{self.p}_gen.h"', "", "#include <string.h>", "",
-               rule("wire primitives"), "", self.primitives()]
+        body = []
         for st in self.proto.structs:
             kind = "message" if st.is_message else "struct"
-            out += [rule(f"{kind} {st.schema_name}"), "", self.c_struct(st)]
+            body += [rule(f"{kind} {st.schema_name}"), "", self.c_struct(st)]
             if st.is_list_elem:
-                out += [rule(f"{st.schema_name}[..]"), "",
-                        self.c_list(st)]
+                body += [rule(f"{st.schema_name}[..]"), "", self.c_list(st)]
+        body = "\n".join(body)
+        out = [f"/* Generated from {self.proto.source} -- do not edit. */",
+               f'#include "{self.p}_gen.h"', "", "#include <string.h>", "",
+               rule("wire primitives"), "", self.primitives(body), body]
         return "\n".join(out).rstrip("\n") + "\n"
 
-    def primitives(self) -> str:
-        parts = [C_CURSORS]
-        parts += [C_RD_INT[n] for n in self.int_sizes]
-        if self.uses_cstr:
-            parts.append(C_RD_CSTR)
-        if self.uses_rest:
-            parts.append(C_RD_REST)
-        parts.append(C_WR_LEFT)
-        parts += [C_WR_INT[n] for n in self.int_sizes]
-        if self.uses_cstr or self.uses_rest or self.uses_list:
-            parts.append(C_WR_RAW)
-        if self.uses_cstr:
-            parts += [C_WR_CSTR, C_CSTR_SIZE]
-        parts.append(C_TRY)
-        return "\n".join(self.t(x) for x in parts)
+    def primitives(self, body: str) -> str:
+        """The cursor types, plus every primitive the generated code calls."""
+        texts = {k: self.t(v) for k, v in PRIMITIVES}
+        def called(k: str, text: str) -> bool:
+            return f"{self.P if k.isupper() else self.p}_{k}(" in text
+        used, changed = set(), True
+        while changed:  # primitives call each other: repeat until nothing new
+            search = body + "".join(texts[k] for k in used)
+            new = {k for k in texts if k not in used and called(k, search)}
+            used |= new
+            changed = bool(new)
+        return "\n".join([self.t(C_CURSORS)] + [texts[k] for k, _ in PRIMITIVES if k in used])
 
-    def read(self, op, st: StructDecl) -> str:
-        p = self.p
+    def c_struct(self, st: StructDecl) -> str:
+        p, P, s = self.p, self.P, f"{self.p}_{st.name}"
+        has_pad = any(isinstance(op, Pad) for op in st.ops)
+        out = []
+        for op in st.ops:
+            if isinstance(op, Dispatch):
+                out.append(self.c_dispatch(st, op))
+
+        lines = ["    const uint8_t *start = r->p;"] if has_pad else []
+        for i, op in enumerate(st.ops):
+            lines += self.read(op, st, f"bits{i}")
+        out += [sig(f"static bool {s}_read", [f"struct {p}_rd *r", f"struct {s} *out"], " {"),
+                *finish(lines, f"{P}_CHECK", "    return true;"), "}", ""]
+
+        lines = ["    uint8_t *start = w->p;"] if has_pad else []
+        for op in st.ops:
+            lines += self.write(op, st)
+        out += [sig(f"static {p}_status {s}_write",
+                    [f"struct {p}_wr *w", f"const struct {s} *in"], " {"),
+                *finish(lines, f"{P}_TRY", f"    return {P}_OK;"), "}", ""]
+
+        out += [sig(f"static size_t {s}_size", [f"const struct {s} *in"], " {"),
+                *self.size_body(st), "}", ""]
+
+        if st.is_message:
+            out.append(self.c_message(st))
+        return "\n".join(out)
+
+    # ---- per-op code ---------------------------------------------------------
+
+    def read(self, op, st: StructDecl, local: str) -> list[str]:
+        p, C = self.p, f"    {self.P}_CHECK"
         match op:
-            case Int():
-                return f"{p}_rd_u{8 * op.size}(r, &out->{op.field})"
+            case Group():
+                return self.read_group(op, local)
             case Cstr():
-                return f"{p}_rd_cstr(r, &out->{op.field})"
+                return [f"{C}({p}_rd_cstr(r, &out->{op.field}));"]
             case Rest():
-                return f"{p}_rd_rest(r, &out->{op.field})"
+                return [f"{C}({p}_rd_rest(r, &out->{op.field}));"]
+            case Bytes():
+                return [f"{C}({p}_rd_bytes(r, &out->{op.field}, {op.field}_len));"]
+            case Fixed(field=None):
+                return [f"{C}({p}_rd_skip(r, {op.elem * op.count}));"]
+            case Fixed(elem=1):
+                return [f"{C}({p}_rd_raw(r, out->{op.field}, {op.count}));"]
+            case Fixed():
+                return [f"    for (size_t i = 0; i < {op.count}; i++)",
+                        f"    {C}({p}_rd_u{8 * op.elem}(r, &out->{op.field}[i]));"]
+            case Pad():
+                return [f"{C}({p}_rd_skip(r, {p}_pad_len((size_t)(r->p - start), {op.align})));"]
             case Sub():
-                return f"{p}_{op.struct}_read(r, &out->{op.field})"
+                return [f"{C}({p}_{op.struct}_read(r, &out->{op.field}));"]
             case List():
-                return f"{p}_{op.elem}_list_read(r, &out->{op.field})"
+                return [f"{C}({p}_{op.elem}_list_read(r, &out->{op.field}));"]
             case Dispatch():
-                return f"{p}_{st.name}_{op.field}_read(r, out)"
+                return [f"{C}({p}_{st.name}_{op.field}_read(r, out));"]
         raise AssertionError(op)
 
-    def write(self, op, st: StructDecl) -> str:
-        p = self.p
+    def read_group(self, g: Group, local: str) -> list[str]:
+        p, C = self.p, f"    {self.P}_CHECK"
+        total, rd = 8 * g.size, f"{p}_rd_u{8 * g.size}"
+        if all(b.field is None and b.const is None and b.length_of is None for b in g.bits):
+            return [f"{C}({p}_rd_skip(r, {g.size}));"]
+        if len(g.bits) == 1 and g.bits[0].field is not None:
+            return [f"{C}({rd}(r, &out->{g.bits[0].field}));"]
+        if len(g.bits) == 1 and g.bits[0].length_of is not None:
+            n = f"{g.bits[0].length_of}_len"
+            return [f"    {c_uint(total)} {n};", f"{C}({rd}(r, &{n}));"]
+        lines = [f"    {c_uint(total)} {local};", f"{C}({rd}(r, &{local}));"]
+        for b in g.bits:
+            shifted = f"{local} >> {b.shift}" if b.shift else local
+            if b.shift + b.width == total:  # top bits: nothing above to mask off
+                e = shifted
+            elif b.shift:
+                e = f"({shifted}) & {hex((1 << b.width) - 1)}"
+            else:
+                e = f"{local} & {hex((1 << b.width) - 1)}"
+            if b.field is not None:
+                lines.append(f"    out->{b.field} = ({self.member_type(b)})({e});")
+            elif b.length_of is not None:
+                t = c_uint(b.width)
+                lines.append(f"    {t} {b.length_of}_len = ({t})({e});")
+            elif b.const is not None:
+                lines.append(f"{C}({e if e == local else f'({e})'} == {b.const});")
+        return lines
+
+    def write(self, op, st: StructDecl) -> list[str]:
+        p, T = self.p, f"    {self.P}_TRY"
         match op:
-            case Int():
-                return f"{p}_wr_u{8 * op.size}(w, in->{op.field})"
+            case Group():
+                return self.write_group(op)
             case Cstr():
-                return f"{p}_wr_cstr(w, &in->{op.field})"
-            case Rest():
-                return f"{p}_wr_raw(w, in->{op.field}.ptr, in->{op.field}.len)"
+                return [f"{T}({p}_wr_cstr(w, &in->{op.field}));"]
+            case Rest() | Bytes():
+                return [f"{T}({p}_wr_raw(w, in->{op.field}.ptr, in->{op.field}.len));"]
+            case Fixed(field=None):
+                return [f"{T}({p}_wr_zero(w, {op.elem * op.count}));"]
+            case Fixed(elem=1):
+                return [f"{T}({p}_wr_raw(w, in->{op.field}, {op.count}));"]
+            case Fixed():
+                return [f"    for (size_t i = 0; i < {op.count}; i++)",
+                        f"    {T}({p}_wr_u{8 * op.elem}(w, in->{op.field}[i]));"]
+            case Pad():
+                return [f"{T}({p}_wr_zero(w, {p}_pad_len((size_t)(w->p - start), {op.align})));"]
             case Sub():
-                return f"{p}_{op.struct}_write(w, &in->{op.field})"
+                return [f"{T}({p}_{op.struct}_write(w, &in->{op.field}));"]
             case List():
-                return f"{p}_{op.elem}_list_write(w, &in->{op.field})"
+                return [f"{T}({p}_{op.elem}_list_write(w, &in->{op.field}));"]
             case Dispatch():
-                return f"{p}_{st.name}_{op.field}_write(w, in)"
+                return [f"{T}({p}_{st.name}_{op.field}_write(w, in));"]
         raise AssertionError(op)
+
+    def write_group(self, g: Group) -> list[str]:
+        p, P, T = self.p, self.P, f"    {self.P}_TRY"
+        total, wr, ct = 8 * g.size, f"{p}_wr_u{8 * g.size}", c_uint(8 * g.size)
+        if all(b.field is None and b.const is None and b.length_of is None for b in g.bits):
+            return [f"{T}({p}_wr_zero(w, {g.size}));"]
+        if len(g.bits) == 1 and g.bits[0].field is not None:
+            return [f"{T}({wr}(w, in->{g.bits[0].field}));"]
+        lines, terms = [], []
+        const = sum(b.const << b.shift for b in g.bits if b.const is not None)
+        if const:
+            terms.append(hex(const))
+        for b in g.bits:
+            if b.field is not None:
+                value = f"in->{b.field}"
+                fits = b.width == c_bits(b.width)  # the C type cannot hold too large a value
+            elif b.length_of is not None:
+                value = f"in->{b.length_of}.len"
+                fits = False  # size_t
+            else:
+                continue
+            if not fits:
+                lines += [f"    if ({value} > {hex((1 << b.width) - 1)})",
+                          f"        return {P}_INVALID;"]
+            terms.append(f"(({ct}){value} << {b.shift})" if b.shift else value)
+        lines.append(join_wrapped(f"{T}({wr}(w, ({ct})(", terms or ["0"], " | ", ")));"))
+        return lines
 
     def size(self, op, st: StructDecl) -> int | str:
         p = self.p
         match op:
-            case Int():
+            case Group():
                 return op.size
+            case Fixed():
+                return op.elem * op.count
             case Cstr():
                 return f"{p}_cstr_size(&in->{op.field})"
-            case Rest():
+            case Rest() | Bytes():
                 return f"in->{op.field}.len"
             case Sub():
                 return f"{p}_{op.struct}_size(&in->{op.field})"
@@ -243,32 +417,60 @@ class Emitter:
                 return f"{p}_{st.name}_{op.field}_size(in)"
         raise AssertionError(op)
 
-    def c_struct(self, st: StructDecl) -> str:
-        p, P, s = self.p, self.P, f"{self.p}_{st.name}"
-        out = []
+    def size_body(self, st: StructDecl) -> list[str]:
+        """Sum the field sizes; at each pad(), round the running total up."""
+        lines, terms, have_n = [], [], False
         for op in st.ops:
-            if isinstance(op, Dispatch):
-                out.append(self.c_dispatch(st, op))
+            if not isinstance(op, Pad):
+                terms.append(self.size(op, st))
+                continue
+            if not have_n:
+                lines.append(sum_expr("    size_t n = ", fold(terms) or ["0"], ";"))
+                have_n = True
+            elif terms:
+                lines.append(sum_expr("    n += ", fold(terms), ";"))
+            lines.append(f"    n += {self.p}_pad_len(n, {op.align});")
+            terms = []
+        if have_n:
+            return lines + [sum_expr("    return ", ["n", *fold(terms)], ";")]
+        if all(isinstance(t, int) for t in terms):
+            lines.append("    (void)in;")
+        return lines + [sum_expr("    return ", fold(terms) or ["0"], ";")]
 
-        out += [sig(f"static bool {s}_read", [f"struct {p}_rd *r", f"struct {s} *out"], " {"),
-                ret([self.read(op, st) for op in st.ops], "&&"), "}", ""]
+    # ---- switch, list and message functions ------------------------------------
 
-        out.append(sig(f"static {p}_status {s}_write",
-                       [f"struct {p}_wr *w", f"const struct {s} *in"], " {"))
-        out += [f"    {P}_TRY({self.write(op, st)});" for op in st.ops]
-        out += [f"    return {P}_OK;", "}", ""]
+    def c_dispatch(self, st: StructDecl, d: Dispatch) -> str:
+        p, P = self.p, self.P
+        s, fn = f"{p}_{st.name}", f"{p}_{st.name}_{d.field}"
+        enum = f"{P}_{d.enum.upper()}"
+        u = f"{d.field}.unknown"
 
-        sizes = [self.size(op, st) for op in st.ops]
-        fixed = sum(x for x in sizes if isinstance(x, int))
-        terms = ([str(fixed)] if fixed else []) + [x for x in sizes if isinstance(x, str)]
-        out.append(sig(f"static size_t {s}_size", [f"const struct {s} *in"], " {"))
-        if len(terms) == 1 and fixed:
-            out.append("    (void)in;")
-        out += [ret(terms or ["0"], "+"), "}", ""]
+        def cases(call: str, default: str) -> list[str]:
+            lines = []
+            for a in d.arms:
+                lines += [f"    case {enum}_{t}:" for t in a.tags]
+                lines.append(f"        return {call.format(m=a.member, s=a.struct)};")
+            return lines + ["    default:", f"        return {default};", "    }", "}", ""]
 
-        if st.is_message:
-            out.append(self.c_message(st))
-        return "\n".join(out)
+        if d.fallback:
+            defaults = (f"{p}_rd_rest(r, &out->{u})",
+                        f"{p}_wr_raw(w, in->{u}.ptr, in->{u}.len)",
+                        f"in->{u}.len")
+        else:
+            defaults = ("false; /* unknown tag */",
+                        f"{P}_INVALID; /* unknown tag */",
+                        "0; /* unknown tag: encode fails */")
+        return "\n".join([
+            sig(f"static bool {fn}_read", [f"struct {p}_rd *r", f"struct {s} *out"], " {"),
+            f"    switch (out->{d.tag}) {{",
+            *cases(f"{p}_{{s}}_read(r, &out->{d.field}.{{m}})", defaults[0]),
+            sig(f"static {p}_status {fn}_write", [f"struct {p}_wr *w", f"const struct {s} *in"], " {"),
+            f"    switch (in->{d.tag}) {{",
+            *cases(f"{p}_{{s}}_write(w, &in->{d.field}.{{m}})", defaults[1]),
+            sig(f"static size_t {fn}_size", [f"const struct {s} *in"], " {"),
+            f"    switch (in->{d.tag}) {{",
+            *cases(f"{p}_{{s}}_size(&in->{d.field}.{{m}})", defaults[2]),
+        ])
 
     def c_list(self, st: StructDecl) -> str:
         p, s = self.p, f"{self.p}_{st.name}"
@@ -284,40 +486,20 @@ class Emitter:
             iter_next=sig(f"bool {s}_iter_next", [f"struct {s}_iter *it", f"struct {s} *out"], " {"))
 
     def c_message(self, st: StructDecl) -> str:
-        p, s = self.p, f"{self.p}_{st.name}"
+        p, P, s = self.p, self.P, f"{self.p}_{st.name}"
+        decode_max = encode_max = ""
+        if st.max_declared:
+            m = f"{P}_{st.name.upper()}_MAX_SIZE"
+            decode_max = f"    if (len > {m})\n        return {P}_INVALID;\n"
+            encode_max = f"    if ({s}_size(in) > {m})\n        return {P}_INVALID;\n"
         return self.t(
-            C_MESSAGE, s=s,
+            C_MESSAGE, s=s, decode_max=decode_max, encode_max=encode_max,
             decode=sig(f"{p}_status {s}_decode",
                        [f"struct {s} *out", "const uint8_t *buf", "size_t len"], " {"),
             encode=sig(f"{p}_status {s}_encode",
                        [f"const struct {s} *in", "uint8_t *buf", "size_t cap",
                         "size_t *written"], " {"),
             encoded_size=sig(f"size_t {s}_encoded_size", [f"const struct {s} *in"], " {"))
-
-    def c_dispatch(self, st: StructDecl, d: Dispatch) -> str:
-        p, P = self.p, self.P
-        s, fn = f"{p}_{st.name}", f"{p}_{st.name}_{d.field}"
-        enum = f"{P}_{d.enum.upper()}"
-
-        def cases(call: str, default: str, why: str) -> list[str]:
-            lines = []
-            for a in d.arms:
-                lines += [f"    case {enum}_{t}:" for t in a.tags]
-                lines.append(f"        return {call.format(m=a.member, s=a.struct)};")
-            return lines + ["    default:", f"        return {default}; /* {why} */",
-                            "    }", "}", ""]
-
-        return "\n".join([
-            sig(f"static bool {fn}_read", [f"struct {p}_rd *r", f"struct {s} *out"], " {"),
-            f"    switch (out->{d.tag}) {{",
-            *cases(f"{p}_{{s}}_read(r, &out->{d.field}.{{m}})", "false", "unknown tag"),
-            sig(f"static {p}_status {fn}_write", [f"struct {p}_wr *w", f"const struct {s} *in"], " {"),
-            f"    switch (in->{d.tag}) {{",
-            *cases(f"{p}_{{s}}_write(w, &in->{d.field}.{{m}})", f"{P}_INVALID", "unknown tag"),
-            sig(f"static size_t {fn}_size", [f"const struct {s} *in"], " {"),
-            f"    switch (in->{d.tag}) {{",
-            *cases(f"{p}_{{s}}_size(&in->{d.field}.{{m}})", "0", "unknown tag: encode fails"),
-        ])
 
 
 def emit(proto: Proto) -> tuple[str, str]:
@@ -333,7 +515,8 @@ H_STATUS = """\
 typedef enum {
     ${P}_OK = 0,
     /* decode: malformed or truncated input;
-     * encode: unencodable input (unknown tag, NUL in cstr) */
+     * encode: unencodable input (unknown tag, value too wide for its field,
+     *         NUL in cstr, message over its declared maximum size) */
     ${P}_INVALID,
     /* encode: output buffer too small */
     ${P}_NOSPACE,
@@ -349,7 +532,7 @@ struct ${p}_cstr {
 """
 
 H_BYTES = """\
-/* u8[..]: points into the buffer. */
+/* u8[..] and u8[len]: points into the buffer. */
 struct ${p}_bytes {
     const uint8_t *ptr;
     size_t len;
@@ -392,14 +575,16 @@ struct ${p}_wr {
     uint8_t *p;
     uint8_t *end;
 };
+"""
 
+# Emitted in this order, each only if the generated code calls it.
+PRIMITIVES = [
+    ("rd_left", """\
 static size_t ${p}_rd_left(const struct ${p}_rd *r) {
     return (size_t)(r->end - r->p);
 }
-"""
-
-C_RD_INT = {
-    1: """\
+"""),
+    ("rd_u8", """\
 static bool ${p}_rd_u8(struct ${p}_rd *r, uint8_t *v) {
     if (${p}_rd_left(r) < 1)
         return false;
@@ -407,8 +592,8 @@ static bool ${p}_rd_u8(struct ${p}_rd *r, uint8_t *v) {
     r->p += 1;
     return true;
 }
-""",
-    2: """\
+"""),
+    ("rd_u16", """\
 static bool ${p}_rd_u16(struct ${p}_rd *r, uint16_t *v) {
     if (${p}_rd_left(r) < 2)
         return false;
@@ -416,8 +601,17 @@ static bool ${p}_rd_u16(struct ${p}_rd *r, uint16_t *v) {
     r->p += 2;
     return true;
 }
-""",
-    4: """\
+"""),
+    ("rd_u24", """\
+static bool ${p}_rd_u24(struct ${p}_rd *r, uint32_t *v) {
+    if (${p}_rd_left(r) < 3)
+        return false;
+    *v = (uint32_t)r->p[0] << 16 | (uint32_t)r->p[1] << 8 | r->p[2];
+    r->p += 3;
+    return true;
+}
+"""),
+    ("rd_u32", """\
 static bool ${p}_rd_u32(struct ${p}_rd *r, uint32_t *v) {
     if (${p}_rd_left(r) < 4)
         return false;
@@ -426,10 +620,25 @@ static bool ${p}_rd_u32(struct ${p}_rd *r, uint32_t *v) {
     r->p += 4;
     return true;
 }
-""",
+"""),
+    ("rd_skip", """\
+static bool ${p}_rd_skip(struct ${p}_rd *r, size_t n) {
+    if (${p}_rd_left(r) < n)
+        return false;
+    r->p += n;
+    return true;
 }
-
-C_RD_CSTR = """\
+"""),
+    ("rd_raw", """\
+static bool ${p}_rd_raw(struct ${p}_rd *r, uint8_t *dst, size_t n) {
+    if (${p}_rd_left(r) < n)
+        return false;
+    memcpy(dst, r->p, n);
+    r->p += n;
+    return true;
+}
+"""),
+    ("rd_cstr", """\
 static bool ${p}_rd_cstr(struct ${p}_rd *r, struct ${p}_cstr *v) {
     if (r->p == r->end)
         return false;
@@ -441,25 +650,31 @@ static bool ${p}_rd_cstr(struct ${p}_rd *r, struct ${p}_cstr *v) {
     r->p = nul + 1;
     return true;
 }
-"""
-
-C_RD_REST = """\
+"""),
+    ("rd_rest", """\
 static bool ${p}_rd_rest(struct ${p}_rd *r, struct ${p}_bytes *v) {
     v->ptr = r->p;
     v->len = ${p}_rd_left(r);
     r->p = r->end;
     return true;
 }
-"""
-
-C_WR_LEFT = """\
+"""),
+    ("rd_bytes", """\
+static bool ${p}_rd_bytes(struct ${p}_rd *r, struct ${p}_bytes *v, size_t n) {
+    if (${p}_rd_left(r) < n)
+        return false;
+    v->ptr = r->p;
+    v->len = n;
+    r->p += n;
+    return true;
+}
+"""),
+    ("wr_left", """\
 static size_t ${p}_wr_left(const struct ${p}_wr *w) {
     return (size_t)(w->end - w->p);
 }
-"""
-
-C_WR_INT = {
-    1: """\
+"""),
+    ("wr_u8", """\
 static ${p}_status ${p}_wr_u8(struct ${p}_wr *w, uint8_t v) {
     if (${p}_wr_left(w) < 1)
         return ${P}_NOSPACE;
@@ -467,8 +682,8 @@ static ${p}_status ${p}_wr_u8(struct ${p}_wr *w, uint8_t v) {
     w->p += 1;
     return ${P}_OK;
 }
-""",
-    2: """\
+"""),
+    ("wr_u16", """\
 static ${p}_status ${p}_wr_u16(struct ${p}_wr *w, uint16_t v) {
     if (${p}_wr_left(w) < 2)
         return ${P}_NOSPACE;
@@ -477,8 +692,19 @@ static ${p}_status ${p}_wr_u16(struct ${p}_wr *w, uint16_t v) {
     w->p += 2;
     return ${P}_OK;
 }
-""",
-    4: """\
+"""),
+    ("wr_u24", """\
+static ${p}_status ${p}_wr_u24(struct ${p}_wr *w, uint32_t v) {
+    if (${p}_wr_left(w) < 3)
+        return ${P}_NOSPACE;
+    w->p[0] = (uint8_t)(v >> 16);
+    w->p[1] = (uint8_t)(v >> 8);
+    w->p[2] = (uint8_t)v;
+    w->p += 3;
+    return ${P}_OK;
+}
+"""),
+    ("wr_u32", """\
 static ${p}_status ${p}_wr_u32(struct ${p}_wr *w, uint32_t v) {
     if (${p}_wr_left(w) < 4)
         return ${P}_NOSPACE;
@@ -489,10 +715,8 @@ static ${p}_status ${p}_wr_u32(struct ${p}_wr *w, uint32_t v) {
     w->p += 4;
     return ${P}_OK;
 }
-""",
-}
-
-C_WR_RAW = """\
+"""),
+    ("wr_raw", """\
 static ${p}_status ${p}_wr_raw(struct ${p}_wr *w, const void *src, size_t n) {
     if (${p}_wr_left(w) < n)
         return ${P}_NOSPACE;
@@ -501,9 +725,18 @@ static ${p}_status ${p}_wr_raw(struct ${p}_wr *w, const void *src, size_t n) {
     w->p += n;
     return ${P}_OK;
 }
-"""
-
-C_WR_CSTR = """\
+"""),
+    ("wr_zero", """\
+static ${p}_status ${p}_wr_zero(struct ${p}_wr *w, size_t n) {
+    if (${p}_wr_left(w) < n)
+        return ${P}_NOSPACE;
+    if (n != 0)
+        memset(w->p, 0, n);
+    w->p += n;
+    return ${P}_OK;
+}
+"""),
+    ("wr_cstr", """\
 static ${p}_status ${p}_wr_cstr(struct ${p}_wr *w, const struct ${p}_cstr *v) {
     if (v->len != 0 && memchr(v->ptr, 0, v->len) != NULL)
         return ${P}_INVALID;
@@ -514,22 +747,34 @@ static ${p}_status ${p}_wr_cstr(struct ${p}_wr *w, const struct ${p}_cstr *v) {
     w->p += 1;
     return ${P}_OK;
 }
-"""
-
-C_CSTR_SIZE = """\
+"""),
+    ("cstr_size", """\
 static size_t ${p}_cstr_size(const struct ${p}_cstr *v) {
     return v->len + 1;
 }
-"""
-
-C_TRY = """\
+"""),
+    ("pad_len", """\
+/* Bytes needed after offset n to reach a multiple of align. */
+static size_t ${p}_pad_len(size_t n, size_t align) {
+    return (align - n % align) % align;
+}
+"""),
+    ("CHECK", """\
+#define ${P}_CHECK(cond) \\
+    do { \\
+        if (!(cond)) \\
+            return false; \\
+    } while (0)
+"""),
+    ("TRY", """\
 #define ${P}_TRY(expr) \\
     do { \\
         ${p}_status st_ = (expr); \\
         if (st_ != ${P}_OK) \\
             return st_; \\
     } while (0)
-"""
+"""),
+]
 
 C_LIST = """\
 /* Consumes the rest of r. Fails unless it is a whole number of ${S}s. */
@@ -590,7 +835,7 @@ ${iter_next}
 
 C_MESSAGE = """\
 ${decode}
-    struct ${p}_rd r = { buf, len != 0 ? buf + len : buf };
+${decode_max}    struct ${p}_rd r = { buf, len != 0 ? buf + len : buf };
     /* The message must account for every byte of the input. */
     if (!${s}_read(&r, out) || r.p != r.end)
         return ${P}_INVALID;
@@ -598,7 +843,7 @@ ${decode}
 }
 
 ${encode}
-    struct ${p}_wr w = { buf, cap != 0 ? buf + cap : buf };
+${encode_max}    struct ${p}_wr w = { buf, cap != 0 ? buf + cap : buf };
     ${P}_TRY(${s}_write(&w, in));
     *written = (size_t)(w.p - buf);
     return ${P}_OK;

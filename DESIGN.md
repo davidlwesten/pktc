@@ -27,12 +27,13 @@ The feature set, derived from TFTP and PCP:
 
 | Construct | Syntax | Needed by |
 |---|---|---|
-| Big-endian u8/u16/u32 | `block: u16;` | both |
-| Bitfields within a byte | not designed yet | PCP (R bit + 7-bit opcode) |
-| Reserved/constant fields | `reserved: u8;` (constants not designed yet) | PCP |
-| Named constants | `const PORT = 5351;` (planned) | PCP (version, port) |
-| Declared maximum size | `message Request max 1100 { ... }` (planned) | PCP (1100 bytes) |
-| Fixed byte arrays | `nonce: u8[12];` | PCP (addresses, nonce) |
+| Big-endian integers u1..u32 | `block: u16;`, `id: u24;` | both |
+| Bitfields | `r: u1; opcode: Opcode;` (enum on `u7`) | PCP (R bit + 7-bit opcode) |
+| Constant fields | `r: u1 = 0;` | PCP (R bit) |
+| Reserved fields | `_: u24;`, `_: u8[12];` | PCP |
+| Named constants | `const SERVER_PORT = 5351;` | PCP (version, ports) |
+| Declared maximum size | `message Request max 1100 { ... }` | PCP (1100 bytes) |
+| Fixed integer arrays | `nonce: u8[12];`, `words: u16[3];` | PCP (addresses, nonce) |
 | Switch on a tag field | `body: switch (opcode) { RRQ, WRQ => Request, ... };` | both |
 | NUL-terminated string | `filename: cstr;` | TFTP |
 | Length from an earlier field | `len: u16; data: u8[len];` | PCP options |
@@ -41,7 +42,34 @@ The feature set, derived from TFTP and PCP:
 | Pad to N-byte boundary | `pad(4);` | PCP options |
 
 `message` declares a top-level packet; `struct` declares a reusable group of
-fields. An `enum Name : u16 { A = 1, ... }` names tag and code values.
+fields. An `enum Name : u16 { A = 1, ... }` names tag and code values; its
+base can be any width from `u1` to `u32`.
+
+**Integers and bitfields.** `uN` is an N-bit big-endian unsigned integer,
+for N from 1 to 32. Consecutive integer and enum fields are packed MSB-first
+into a group, which is read as one big-endian integer and split into its
+fields. A group ends on the first byte boundary and may span at most 32
+bits. A plain `u16` is simply a group of one field, and `u24` needs no
+special case. In C each field gets the smallest `uintN_t` that holds it,
+or its enum type. Encode returns `INVALID` for a value too wide for its
+field rather than truncate it.
+
+**Constant and reserved fields have no C member.** `r: u1 = 0;` must
+equal 0: decode returns `INVALID` otherwise, and encode writes 0. The name
+is documentation only. `_: u24;` (or `_: u8[12];`) is reserved: ignored on
+decode, written as zeros on encode. Only check a value with a constant
+when a mismatch should drop the message. PCP's R bit is a constant, but
+its version is a plain field, because a server must answer an unknown
+version with `UNSUPP_VERSION` rather than drop it. The caller compares it
+against `const VERSION = 2;`.
+
+**Fixed arrays are copied into the C struct** (`uint8_t nonce[12]`,
+`uint16_t words[3]`), so callers fill them in directly. Elements are
+`u8`, `u16` or `u32`, converted to host order.
+
+**`pad(n)`** skips to the next multiple of n bytes, counted from the start
+of the enclosing struct (for PCP, from the start of each option). Padding
+is ignored on decode and written as zeros.
 
 **Length fields are derived, not set.** In `len: u16; data: u8[len];`,
 naming `len` as the array's length is the whole declaration: decode reads
@@ -53,7 +81,7 @@ would need expressions and go through the escape hatch. An earlier draft
 spelled this `len: u16 = sizeof(data)`; it was dropped because it repeated
 what `u8[len]` already says, and C's `sizeof` suggested the wrong meaning.
 
-**Message sizes (planned, with PCP).** Every message gets a generated
+**Message sizes.** Every message gets a generated
 `<PROTO>_<MSG>_MIN_SIZE`, which is always computable. It also gets
 `<PROTO>_<MSG>_MAX_SIZE` when a maximum is known, for sizing receive
 buffers. A maximum is known in two ways:
@@ -70,10 +98,9 @@ buffers. A maximum is known in two ways:
 negotiated `blksize`, which is session state, not wire format. Callers
 without a `_MAX_SIZE` use the transport's limit (65,507 bytes for UDP).
 
-**Named constants (planned, with PCP).** `const PORT = 5351;` generates
-`#define <PROTO>_PORT 5351`. These are for protocol numbers callers need,
-such as ports and versions, and will be designed together with constant
-fields (PCP's `version = 2`).
+**Named constants.** `const SERVER_PORT = 5351;` generates
+`#define <PROTO>_SERVER_PORT 5351`, for protocol numbers callers need,
+such as ports and versions.
 
 **Deferred until a target protocol needs them:**
 - *Count- and byte-length-prefixed arrays.* `[n]` is ambiguous for
@@ -92,14 +119,16 @@ fields (PCP's `version = 2`).
   put the length elsewhere, so add this only if schemas get noisy without it.
 
 Not supported: little-endian, varints, checksums, arbitrary expressions,
-nested length scopes, optional fields, versioning.
+nested length scopes, optional fields, versioning, empty structs.
 
-See `examples/tftp/tftp.schema` and `tests/syntax.schema`.
+See `examples/tftp/tftp.schema`, `examples/pcp/pcp.schema` and
+`tests/syntax.schema`.
 
 ## Generated C
 
-`examples/tftp/tftp_gen.h` and `tftp_gen.c` show what the generator emits
-for TFTP. They started as hand-written targets and are now generated.
+`examples/tftp/` and `examples/pcp/` hold generated code (`<proto>_gen.h`,
+`<proto>_gen.c`) next to its schema, tests and fuzz harness. The TFTP code
+started as a hand-written target for the emitter.
 
 - **One C struct per schema struct, and a tagged union per `switch`.** The C
   mirrors the schema directly. Schema arms that share a type share a union
@@ -114,12 +143,13 @@ for TFTP. They started as hand-written targets and are now generated.
   - `cstr`: decode checks the NUL is inside the buffer, so `ptr` is also a
     valid C string; `len` excludes the terminator. Encode writes the NUL from
     `len`, so the caller's `ptr` needn't be NUL-terminated.
-  - `u8[...]`: `{ const uint8_t *ptr; size_t len; }`.
-  - Arrays of multi-byte elements (`u16[]`) cannot be typed pointers, because
-    of byte order, alignment and strict aliasing. They become a view plus a
-    generated `_get(i)` accessor that reads byte by byte with shifts, which
-    compilers turn into a single load (plus a byte swap if needed).
+  - `u8[..]` and `u8[len]`: `{ const uint8_t *ptr; size_t len; }`.
   - Lists of structs (`Option[..]`) become a view plus an iterator.
+  - Fixed arrays are the exception: they are copied (see above). A view
+    into a buffer of `u16` elements could not be a typed pointer, because
+    of byte order, alignment and strict aliasing; if variable-length
+    arrays of wider elements are ever added, they need a `_get(i)`
+    accessor instead.
 - **Scalars are decoded into the struct** with byte-by-byte shifts. Never cast
   a packed struct over the buffer.
 - **Enums are C23 fixed-type enums** (`enum tftp_opcode : uint16_t`). This
@@ -136,23 +166,27 @@ for TFTP. They started as hand-written targets and are now generated.
 - **API per message:** `_decode(out, buf, len)`, `_encode(in, buf, cap,
   &written)` and `_encoded_size(in)`. The statuses are `OK`, `INVALID`
   and `NOSPACE` (encode only). Encode returns `INVALID` for input it cannot
-  encode (unknown tag, NUL in a `cstr`, hand-filled `raw` list bytes that
-  decode would reject), so encode never emits bytes that decode rejects.
-  `_encoded_size` is exact when encode succeeds; for input encode rejects
-  its result is meaningless. `*written` is set only on `OK`. Datagram protocols have no `INCOMPLETE`;
-  a stream protocol would add one that reports how many bytes are still
-  needed.
+  encode (unknown tag without a `_` arm, a value too wide for its field,
+  NUL in a `cstr`, a message over its declared `max`, hand-filled `raw`
+  list bytes that decode would reject), so encode never emits bytes that
+  decode rejects. `_encoded_size` is exact when encode succeeds; for input
+  encode rejects its result is meaningless. `*written` is set only on `OK`.
+  Datagram protocols have no `INCOMPLETE`; a stream protocol would add one
+  that reports how many bytes are still needed. The header also defines
+  `<PROTO>_<MSG>_MIN_SIZE` and, where known, `_MAX_SIZE`.
 - **Generated code layout:** two bounds-checked cursors (read and write)
   with primitive helpers (`rd_u16`, `rd_cstr`, `wr_u16`, ...), then one
   static `_read`/`_write`/`_size` triple per schema struct, each calling
   the helpers or other structs' triples field by field. A switch gets its
   own triple, `<struct>_<field>_read` etc., holding the C `switch`. A
   message's public `_decode`/`_encode`/`_encoded_size` wrap its triple.
-  Only the message functions and list iterators are public. Only the
-  primitives the schema uses are emitted, and only structs reachable from
-  a message, so `-Wunused-function` stays quiet. The only library
-  dependency is `<string.h>` (`memchr`, `memcpy`), which C23 freestanding
-  provides.
+  Reads and writes are one statement per field, `<P>_CHECK(...)` and
+  `<P>_TRY(...)`, so a bit group can take several statements. Only the
+  message functions and list iterators are public. Only the primitives
+  the generated code calls are emitted (found by scanning it), and only
+  structs reachable from a message, so `-Wunused-function` stays quiet.
+  The only library dependency is `<string.h>` (`memchr`, `memcpy`,
+  `memset`), which C23 freestanding provides.
 - **Encoding a variable-length payload copies it** into the output buffer.
   Scatter-gather output (header bytes plus pointers for `writev`) and a
   reserve-then-fill API are possible later additions.
@@ -167,8 +201,9 @@ for TFTP. They started as hand-written targets and are now generated.
   for example, no embedded NUL in a `cstr`. A successful decode guarantees
   the struct is safe to read ("parse, don't validate").
 - **Lenient by default, where the RFCs ask for it:**
-  - Reserved fields are ignored on decode and written as zero on encode
-    (PCP requires this).
+  - Reserved fields (`_`) and padding are ignored on decode and written as
+    zero on encode (PCP requires this). So for a schema with either,
+    decode then encode reproduces the input except in those bytes.
   - Union tags are closed: an unknown tag is `INVALID`, unless the switch
     has a `_ => u8[..]` fallback arm, which generates `body.unknown` as a
     byte view. PCP needs the fallback to answer an unsupported opcode with
@@ -202,16 +237,24 @@ depends on nothing.
    `python3 -m unittest discover tests`.
    - Declarations: a `protocol` and at least one `message`; names unique
      and not built-in; `endian little` is rejected (not supported).
-   - Enums: base is u8/u16/u32; variant names and values unique; values
-     fit the base.
+   - Enums: base is u1..u32; variant names and values unique; values fit
+     the base.
+   - Bit groups: consecutive integer fields end on a byte boundary within
+     32 bits.
+   - Constant fields are integers and the value fits; reserved fields are
+     integers or fixed integer arrays; a struct must keep at least one C
+     member.
+   - `max` only on messages, not below the computed minimum and not at or
+     above a computed maximum. `size_bounds()` computes both, and the IR
+     reuses it for the size constants.
    - Types: every name resolves; a `message` is never used as a type;
      no struct contains itself, directly or indirectly; empty structs are
      rejected for now.
    - Arrays: elements are u8/u16/u32, or a struct only in `S[..]` (a list),
      and that struct must not itself run to the end of the message.
-   - Length fields: `d: u8[n]` needs `n` to be an earlier u8/u16/u32
-     field of the same struct, and `n` may size only one array. Arrays
-     sized by a field must be `u8`.
+   - Length fields: `d: u8[n]` needs `n` to be an earlier, non-constant
+     integer field of the same struct, of any width, and `n` may size only
+     one array. Arrays sized by a field must be `u8`.
    - Anything that runs to the end of the message must be last: a `[..]`
      field, a field of a struct that ends that way, or a switch with such
      an arm (including `_`).
@@ -221,15 +264,15 @@ depends on nothing.
    - C names: field names are not C keywords; distinct schema names stay
      distinct after snake_casing, and don't take names the generated code
      uses itself (`<proto>_status`, `_cstr`, `_bytes`, `_rd`, `_wr`,
-     `<S>_list`, `<S>_iter`, `body.unknown`, enum constants).
-   - Not yet: bitfields filling whole bytes (bitfields are not designed).
+     `<S>_list`, `<S>_iter`, `<struct>_<switch>`, `body.unknown`, and
+     constants such as `<PROTO>_OK`, `_CHECK` and `<MSG>_MAX_SIZE`).
 3. **Lower to an IR (done):** `ir.py`. A flat list of wire operations per
-   struct (`Int`, `Cstr`, `Rest`, `Sub`, `List`, `Dispatch`), with every
-   name already in C form, and structs ordered dependencies first. Decode,
-   encode and size are all generated from the same list, so they cannot
-   disagree. Constructs not implemented yet raise `NotImplementedError`
-   rather than emit wrong code. Fixed offsets are not computed yet; the
-   constant parts of a size are folded (`2 + in->data.len`).
+   struct (`Group` of `Bits`, `Cstr`, `Rest`, `Bytes`, `Fixed`, `Pad`,
+   `Sub`, `List`, `Dispatch`), with every name already in C form, and
+   structs ordered dependencies first. Decode, encode and size are all
+   generated from the same list, so they cannot disagree. Fixed offsets
+   are not computed; the constant parts of a size are folded
+   (`2 + in->data.len`).
 4. **Emit (done):** `emit.py`. Python f-strings for code that depends on
    the schema, and `string.Template` (`${p}` = prefix) for fixed C such as
    the primitives and list functions. Signatures that depend on name
@@ -241,17 +284,25 @@ depends on nothing.
 
 ## Testing
 
-- **Golden files:** the generated `tftp_gen.h` and `tftp_gen.c` are
-  committed; `tests/test_emit.py` regenerates them and fails if they differ.
-  After changing the emitter, regenerate with `python3 pktc.py
-  examples/tftp/tftp.schema` and review the diff.
-- **Generality:** `tests/test_emit.py` also generates a made-up `demo`
-  protocol covering what TFTP does not (u8/u32, u32 enums, nested structs,
-  switches in non-message structs, shared arms, several messages), compiles
-  it with `-Werror` and sanitizers, and round-trips packets through it.
-- **Round trip:** decode followed by encode gives back the same bytes.
-- **Fuzzing (libFuzzer via clang):** decode never crashes or reads out of
-  bounds, and anything that decodes re-encodes to identical bytes.
+- **Golden files:** the generated code in `examples/tftp` and
+  `examples/pcp` is committed; `tests/test_emit.py` regenerates it and
+  fails if it differs. After changing the emitter, regenerate with
+  `python3 pktc.py examples/<proto>/<proto>.schema` and review the diff.
+- **Example tests:** `test_tftp.c` and `test_pcp.c` (PCP packets laid out
+  from RFC 6887) are compiled with `-Werror` and sanitizers and run by
+  `tests/test_emit.py`.
+- **Generality:** `tests/test_emit.py` also generates two made-up
+  protocols and round-trips packets through them: `demo` (u8/u32, u32
+  enums, nested structs, switches in non-message structs, shared arms,
+  several messages) and `bits` (a constant, enum, length and flags in one
+  16-bit group, `u24`, `u16[3]`, reserved arrays, `pad(8)` mid-message, a
+  computed `MAX_SIZE`).
+- **Round trip:** decode then encode gives back the same bytes, except for
+  reserved fields and padding, which come back as zeros.
+- **Fuzzing (libFuzzer via clang):** `fuzz_<proto>.c` in each example.
+  Decode never crashes or reads out of bounds. Anything that decodes
+  re-encodes to the same length, the result decodes again, and
+  re-encoding that gives identical bytes.
 
 ## Next steps
 
@@ -265,7 +316,14 @@ depends on nothing.
    code.~~ Done: `ir.py`, `emit.py`, `pktc.py`. The committed TFTP code is
    now generated. The C tests and fuzzer pass against it unchanged, except
    that `encoded_size` no longer promises 0 for an unknown tag.
-4. Add PCP: bitfields, constant fields, fixed arrays, length fields,
-   padding and the `_` fallback arm. Along with these, add `const`
-   declarations, `message ... max N`, and the generated `_MIN_SIZE` and
-   `_MAX_SIZE` constants (see "Message sizes").
+4. ~~Add PCP: bitfields, constant fields, fixed arrays, length fields,
+   padding and the `_` fallback arm, plus `const`, `max` and the size
+   constants.~~ Done: `examples/pcp/`.
+5. Candidates for next, roughly in order:
+   - Design the escape hatch, which STUN needs (XOR-mapped addresses,
+     CRC fingerprint).
+   - Add NTP or STUN as a third protocol. STUN would also force a decision
+     on byte-length-prefixed lists (see "Deferred").
+   - Emit a standalone Lark parser so the compiler has no dependencies
+     either.
+   - Add a Makefile (or similar) for the C tests and fuzzers.

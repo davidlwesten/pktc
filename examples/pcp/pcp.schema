@@ -1,0 +1,88 @@
+// Port Control Protocol, RFC 6887.
+protocol pcp;
+
+const VERSION = 2;         // decode leaves checking it to the caller (UNSUPP_VERSION)
+const SERVER_PORT = 5351;
+const CLIENT_PORT = 5350;
+
+enum Opcode : u7 { ANNOUNCE = 0, MAP = 1, PEER = 2 }
+
+enum Result : u8 {
+    SUCCESS = 0, UNSUPP_VERSION = 1, NOT_AUTHORIZED = 2, MALFORMED_REQUEST = 3,
+    UNSUPP_OPCODE = 4, UNSUPP_OPTION = 5, MALFORMED_OPTION = 6, NETWORK_FAILURE = 7,
+    NO_RESOURCES = 8, UNSUPP_PROTOCOL = 9, USER_EX_QUOTA = 10,
+    CANNOT_PROVIDE_EXTERNAL = 11, ADDRESS_MISMATCH = 12, EXCESSIVE_REMOTE_PEERS = 13,
+}
+
+enum OptionCode : u8 { THIRD_PARTY = 1, PREFER_FAILURE = 2, FILTER = 3 }
+
+// RFC 6887 section 7.1. Addresses are IPv6 or IPv4-mapped IPv6.
+message Request max 1100 {
+    version: u8;
+    r: u1 = 0;
+    opcode: Opcode;
+    _: u16;
+    lifetime: u32;
+    client_ip: u8[16];
+    body: switch (opcode) {
+        ANNOUNCE => Announce,
+        MAP      => Map,
+        PEER     => Peer,
+        _        => u8[..],    // answered with UNSUPP_OPCODE
+    };
+}
+
+// RFC 6887 section 7.2.
+message Response max 1100 {
+    version: u8;
+    r: u1 = 1;
+    opcode: Opcode;
+    _: u8;
+    result: Result;
+    lifetime: u32;
+    epoch: u32;
+    _: u8[12];
+    body: switch (opcode) {
+        ANNOUNCE => Announce,
+        MAP      => Map,
+        PEER     => Peer,
+        _        => u8[..],
+    };
+}
+
+struct Announce { options: Option[..]; }
+
+// Section 11.1. In a request the port and address are suggestions;
+// in a response they are the assigned values.
+struct Map {
+    nonce: u8[12];
+    protocol: u8;
+    _: u24;
+    internal_port: u16;
+    external_port: u16;
+    external_ip: u8[16];
+    options: Option[..];
+}
+
+// Section 12.1.
+struct Peer {
+    nonce: u8[12];
+    protocol: u8;
+    _: u24;
+    internal_port: u16;
+    external_port: u16;
+    external_ip: u8[16];
+    remote_port: u16;
+    _: u16;
+    remote_ip: u8[16];
+    options: Option[..];
+}
+
+// Section 7.3. The length counts the data but not the padding.
+struct Option {
+    code: OptionCode;
+    _: u8;
+    len: u16;
+    data: u8[len];
+    pad(4);
+}
