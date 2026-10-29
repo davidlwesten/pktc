@@ -8,7 +8,8 @@ bytes into structs and structs into bytes, and never does I/O itself.
 ## Scope
 
 Target protocols are small, fixed, RFC-defined protocols such as TFTP
-(RFC 1350, options per RFC 2347), PCP (RFC 6887), NTP and STUN.
+(RFC 1350, options per RFC 2347), PCP (RFC 6887), NTP (RFC 5905, control
+messages per RFC 9327) and STUN (RFC 8489). All four are in `examples/`.
 
 pktc is deliberately not general-purpose. Most of protobuf's weight comes
 from schema evolution (field numbers, unknown fields, optional presence,
@@ -16,10 +17,19 @@ varints, reflection, a runtime). For these protocols the RFC is the schema
 and it does not change, so pktc has none of that.
 
 **Rule for adding features:** a construct goes into the language only when
-a real protocol on the target list needs it. Anything unusual (DNS name
-compression, STUN's XOR-mapped addresses and CRC fingerprint) goes through
-an escape hatch, where generated code calls a hand-written function for that
-field, instead of growing the language. The escape hatch is not designed yet.
+a real protocol on the target list needs it. Anything unusual about the
+wire format (DNS name compression, say) goes through an escape hatch, where
+generated code calls a hand-written function for that field, instead of
+growing the language. No target protocol has needed one yet, so it is not
+designed.
+
+**Values computed from other values or bytes are the caller's job, not
+wire format.** STUN looked like it would need the escape hatch, but its
+oddities sit above the codec. XOR-MAPPED-ADDRESS has MAPPED-ADDRESS's
+layout with the port and address XORed by the cookie and transaction ID:
+decode it, then XOR. FINGERPRINT (CRC-32) and MESSAGE-INTEGRITY (HMAC) are
+computed over the encoded bytes before them: decode and check, or encode
+with a placeholder and patch it. `examples/stun/test_stun.c` does both.
 
 ## Schema language
 
@@ -109,9 +119,9 @@ buffers. A maximum is known in two ways:
 
 | Message | `max` | `_MAX_SIZE` | Enforced |
 |---|---|---|---|
-| bounded by its fields (NTP: 48 bytes) | no | computed | not needed |
+| bounded by its fields (STUN Address: 20; STUN Message: 65,555, from its 16-bit length) | no | computed | not needed |
 | unbounded, RFC states a limit (PCP: 1100) | yes | declared value | decode `INVALID`, encode refuses |
-| unbounded, no fixed limit (TFTP) | no | none | no |
+| unbounded, no fixed limit (TFTP, NTP) | no | none | no |
 
 `max` is optional. The checker rejects a `max` below the computed minimum
 (no valid message could fit) and a `max` at or above a computed maximum
@@ -138,14 +148,20 @@ Not supported: little-endian, varints, checksums, arbitrary expressions,
 length fields that cover anything but one array, optional fields,
 versioning, empty structs.
 
-See `examples/tftp/tftp.schema`, `examples/pcp/pcp.schema` and
-`tests/syntax.schema`.
+See `examples/*/*.schema` and `tests/syntax.schema`.
 
 ## Generated C
 
-`examples/tftp/` and `examples/pcp/` hold generated code (`<proto>_gen.h`,
+`examples/<proto>/` holds generated code (`<proto>_gen.h`,
 `<proto>_gen.c`) next to its schema, tests and fuzz harness. The TFTP code
 started as a hand-written target for the emitter.
+
+- **A `message` is anything decoded from a buffer of its own,** not only a
+  whole packet. Containers whose values have their own layout (STUN
+  attributes) declare those layouts as messages (`message Address`) and
+  the caller decodes a value view with them:
+  `stun_address_decode(&a, attr.value.ptr, attr.value.len)`. This keeps
+  the container generic: unknown attribute types still decode, as bytes.
 
 - **One C struct per schema struct, and a tagged union per `switch`.** The C
   mirrors the schema directly. Schema arms that share a type share a union
@@ -305,13 +321,15 @@ default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness (see
 
 ## Testing
 
-- **Golden files:** the generated code and fuzz harness in
-  `examples/tftp` and `examples/pcp` are committed; `tests/test_emit.py`
+- **Golden files:** the generated code and fuzz harness in each
+  `examples/<proto>` are committed; `tests/test_emit.py`
   regenerates them and fails if they differ. After changing the emitter,
   regenerate with `python3 pktc.py examples/<proto>/<proto>.schema --fuzz`
   and review the diff.
-- **Example tests:** `test_tftp.c` and `test_pcp.c` (PCP packets laid out
-  from RFC 6887) are compiled with `-Werror` and sanitizers and run by
+- **Example tests:** `test_tftp.c`, `test_pcp.c` (packets laid out from
+  RFC 6887), `test_ntp.c` (RFC 5905 and 9327) and `test_stun.c` (the RFC
+  5769 test vectors, including their fingerprints and XOR-mapped
+  addresses) are compiled with `-Werror` and sanitizers and run by
   `tests/test_emit.py`.
 - **Generality:** `tests/test_emit.py` also generates two made-up
   protocols and round-trips packets through them: `demo` (u8/u32, u32
@@ -320,15 +338,19 @@ default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness (see
   16-bit group, `u24`, signed `i8` and `i12`, `u16[3]`, reserved arrays,
   `pad 8` mid-message, a computed `MAX_SIZE`).
 - **Round trip:** decode then encode gives back the same bytes, except for
-  reserved fields and padding, which come back as zeros.
+  reserved fields and padding, which come back as zeros. Inside a decoded
+  list nothing changes, because encode copies the list's raw bytes.
 - **Fuzzing (libFuzzer via clang):** the harness is generated
   (`pktc.py --fuzz`), so every schema gets one. Each input is used twice:
   - *As a packet:* decode it; touch every view, list element and union arm
     so ASan checks them; it must re-encode to its own length, and fail with
     `NOSPACE` one byte short. Messages with no reserved fields or padding
-    must re-encode to identical bytes. Messages with them must decode
-    again and then re-encode identically, since reserved bytes and padding
-    come back as zeros.
+    outside lists must re-encode to identical bytes. Messages with them
+    must decode again and then re-encode identically, since reserved bytes
+    and padding come back as zeros. The weaker check misses bugs that keep
+    a message self-consistent: a STUN decoder ignoring its length field
+    passed 2 million runs while STUN was wrongly treated as inexact
+    (padding in attributes), and failed at once with the exact check.
   - *As a recipe:* generated `build_<struct>` functions read choices from
     it (tags, list counts, view lengths, field values masked to their
     widths) and build a valid message. It must encode to exactly
@@ -339,7 +361,7 @@ default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness (see
     PCP option padding, decode-only fuzzing missed it for minutes, while
     the recipe side found it in about 4,000 runs.
 
-  `tests/test_emit.py` generates and runs the harness for TFTP, PCP,
+  `tests/test_emit.py` generates and runs the harness for each example,
   `demo` and `bits` for 3 seconds each when clang is available. For
   longer runs, build the committed `examples/<proto>/<proto>_fuzz.c` with
   the command in its header comment.
@@ -359,11 +381,13 @@ default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness (see
 4. ~~Add PCP: bitfields, constant fields, fixed arrays, length fields,
    padding and the `_` fallback arm, plus `const`, `max` and the size
    constants.~~ Done: `examples/pcp/`.
-5. Candidates for next, roughly in order:
-   - Design the escape hatch, which STUN needs (XOR-mapped addresses,
-     CRC fingerprint).
-   - Add NTP or STUN as a third protocol. STUN would also force a decision
-     on byte-length-prefixed lists (see "Deferred").
+5. ~~Add NTP and STUN.~~ Done: `examples/ntp/`, `examples/stun/`. They
+   needed signed integers, `S[len]` and field padding (replacing
+   `pad(n)`), but no escape hatch.
+6. Candidates for next, roughly in order:
    - Emit a standalone Lark parser so the compiler has no dependencies
      either.
    - Add a Makefile (or similar) for the C tests and long fuzz runs.
+   - A protocol that needs what is still deferred: DNS (element counts,
+     name compression, the first real escape hatch) or DHCP (options
+     ending at an END code, inside a fixed-size BOOTP header).

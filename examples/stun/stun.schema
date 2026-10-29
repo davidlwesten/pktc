@@ -1,0 +1,75 @@
+// Session Traversal Utilities for NAT, RFC 8489.
+protocol stun;
+
+const PORT = 3478;
+const TLS_PORT = 5349;
+const MAGIC_COOKIE = 0x2112A442;   // also the key for XOR-MAPPED-ADDRESS
+
+// Section 5: the 14-bit type interleaves a 12-bit method and a 2-bit class
+// (request, indication, success, error). These are the Binding method's.
+enum Type : u14 {
+    BINDING_REQUEST = 0x0001, BINDING_INDICATION = 0x0011,
+    BINDING_SUCCESS = 0x0101, BINDING_ERROR = 0x0111,
+}
+
+// Section 18.3. Values not listed here are kept as they are.
+enum AttributeType : u16 {
+    MAPPED_ADDRESS = 0x0001, USERNAME = 0x0006, MESSAGE_INTEGRITY = 0x0008,
+    ERROR_CODE = 0x0009, UNKNOWN_ATTRIBUTES = 0x000A, REALM = 0x0014,
+    NONCE = 0x0015, MESSAGE_INTEGRITY_SHA256 = 0x001C,
+    PASSWORD_ALGORITHM = 0x001D, USERHASH = 0x001E,
+    XOR_MAPPED_ADDRESS = 0x0020, PASSWORD_ALGORITHMS = 0x8002,
+    ALTERNATE_DOMAIN = 0x8003, SOFTWARE = 0x8022, ALTERNATE_SERVER = 0x8023,
+    FINGERPRINT = 0x8028,
+}
+
+// Section 5. The length counts the attributes, not the 20-byte header.
+// The constant top bits and cookie tell STUN apart from other protocols
+// on the same port.
+message Message {
+    zero: u2 = 0;
+    type: Type;
+    length: u16;
+    cookie: u32 = 0x2112A442;
+    transaction_id: u8[12];
+    attributes: Attribute[length];
+}
+
+// Section 14. The length counts the value but not the padding.
+struct Attribute {
+    type: AttributeType;
+    length: u16;
+    value: u8[length] pad 4;
+}
+
+// ---- attribute values: each is decoded from an Attribute's value ----
+
+enum Family : u8 { IPV4 = 0x01, IPV6 = 0x02 }
+
+// MAPPED-ADDRESS, ALTERNATE-SERVER and XOR-MAPPED-ADDRESS (sections 14.1,
+// 14.2, 14.15). For XOR-MAPPED-ADDRESS, the port and address are XORed
+// with the cookie (and, for IPv6, the transaction ID): the caller's job.
+message Address {
+    _: u8;
+    family: Family;
+    port: u16;
+    address: switch (family) {
+        IPV4 => Ipv4,
+        IPV6 => Ipv6,
+    };
+}
+
+struct Ipv4 { addr: u8[4]; }
+struct Ipv6 { addr: u8[16]; }
+
+// Section 14.8. The code is class * 100 + number, e.g. 420.
+message ErrorCode {
+    _: u21;
+    class: u3;
+    number: u8;
+    reason: u8[..];     // UTF-8, not NUL-terminated
+}
+
+// Section 14.7: CRC-32 of the message before this attribute, XOR 0x5354554e.
+// The message length must already count this attribute.
+message Fingerprint { crc: u32; }
