@@ -1,0 +1,69 @@
+// Network Time Protocol version 4, RFC 5905, with mode 6 control
+// messages (RFC 9327). Mode 7 (private) is implementation-specific.
+protocol ntp;
+
+const PORT = 123;
+const VERSION = 4;
+
+enum Leap : u2 { NONE = 0, ADD_SECOND = 1, DEL_SECOND = 2, UNSYNCHRONIZED = 3 }
+
+enum Mode : u3 {
+    RESERVED = 0, SYMMETRIC_ACTIVE = 1, SYMMETRIC_PASSIVE = 2, CLIENT = 3,
+    SERVER = 4, BROADCAST = 5, CONTROL = 6, PRIVATE = 7,
+}
+
+// RFC 9327 section 2.
+enum ControlOp : u5 {
+    READ_STATUS = 1, READ_VARIABLES = 2, WRITE_VARIABLES = 3,
+    READ_CLOCK_VARIABLES = 4, WRITE_CLOCK_VARIABLES = 5,
+    SET_TRAP = 6, TRAP_RESPONSE = 7,
+}
+
+// The version is a plain field: servers answer older versions too.
+message Packet {
+    leap: Leap;
+    version: u3;
+    mode: Mode;
+    body: switch (mode) {
+        SYMMETRIC_ACTIVE, SYMMETRIC_PASSIVE, CLIENT, SERVER, BROADCAST => Time,
+        CONTROL => Control,
+        _       => u8[..],
+    };
+}
+
+// RFC 5905 section 7.3. Poll and precision are log2 seconds.
+struct Time {
+    stratum: u8;
+    poll: i8;
+    precision: i8;
+    root_delay: Short;
+    root_dispersion: Short;
+    reference_id: u8[4];     // an IPv4 address, a hash, or ASCII (stratum 0-1)
+    reference: Timestamp;
+    origin: Timestamp;
+    receive: Timestamp;
+    transmit: Timestamp;
+    // Extension fields (RFC 7822) and the MAC. Telling them apart takes
+    // the heuristics of RFC 7822 section 7.5, so they are left to the caller.
+    extensions: u8[..];
+}
+
+// Section 6: fixed-point seconds. Short is for durations; a Timestamp
+// counts from 1900 (era 0).
+struct Short     { seconds: u16; fraction: u16; }
+struct Timestamp { seconds: u32; fraction: u32; }
+
+// RFC 9327 section 2. The authenticator is optional.
+struct Control {
+    response: u1;
+    error: u1;
+    more: u1;
+    opcode: ControlOp;
+    sequence: u16;
+    status: u16;
+    association_id: u16;
+    offset: u16;
+    count: u16;
+    data: u8[count] pad 4;
+    authenticator: u8[..];
+}

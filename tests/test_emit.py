@@ -20,7 +20,7 @@ SANITIZE = ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
 HAVE_GCC = shutil.which("gcc") is not None
 HAVE_CLANG = shutil.which("clang") is not None
 FUZZ_SECONDS = 3
-EXAMPLES = ["tftp", "pcp"]
+EXAMPLES = ["tftp", "pcp", "ntp"]
 
 # Covers what TFTP does not: u8/u32 fields, a u32 enum, an enum field that is
 # not a switch tag, a nested struct, a switch in a non-message struct that
@@ -253,6 +253,9 @@ class Golden(unittest.TestCase):
     def test_pcp(self):
         self.check_example("pcp")
 
+    def test_ntp(self):
+        self.check_example("ntp")
+
 
 class Output(unittest.TestCase):
     def test_unused_struct_not_emitted(self):
@@ -330,6 +333,9 @@ class Compiles(unittest.TestCase):
     def test_pcp(self):
         self.run_example("pcp")
 
+    def test_ntp(self):
+        self.run_example("ntp")
+
 
 @unittest.skipUnless(HAVE_CLANG, "clang not found")
 class Fuzz(unittest.TestCase):
@@ -363,6 +369,9 @@ class Fuzz(unittest.TestCase):
 
     def test_pcp(self):
         self.fuzz_text("pcp", (ROOT / "examples/pcp/pcp.schema").read_text())
+
+    def test_ntp(self):
+        self.fuzz_text("ntp", (ROOT / "examples/ntp/ntp.schema").read_text())
 
     def test_demo(self):
         self.fuzz_text("demo", DEMO)
