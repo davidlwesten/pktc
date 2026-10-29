@@ -502,9 +502,368 @@ class Emitter:
             encoded_size=sig(f"size_t {s}_encoded_size", [f"const struct {s} *in"], " {"))
 
 
+class FuzzEmitter(Emitter):
+    """A libFuzzer harness for the generated code (<proto>_fuzz.c).
+
+    Each input is used twice. As a packet: decode it, touch every view, and
+    re-encode it. As a recipe: build_<struct> functions read choices (tags,
+    list counts, lengths, values) from it to build a valid message, which
+    must encode, decode and re-encode identically. The second half reaches
+    deep structure (options, odd lengths, every arm) that random bytes
+    rarely decode to, because the encoder computes lengths and padding.
+    """
+
+    def harness(self) -> str:
+        p = self.p
+        ops = [op for st in self.proto.structs for op in st.ops]
+        self.uses_arena = any(isinstance(op, (Cstr, List)) for op in ops)
+        self.structs = {st.name: st for st in self.proto.structs}
+        self.enums = {e.name: e for e in self.proto.enums}
+        out = [f"/* Generated from {self.proto.source} -- do not edit.",
+               " *",
+               f" * libFuzzer harness for the code in {p}_gen.c. Each input is used twice:",
+               " * as a packet to decode (decode_<message>), and as a recipe for building",
+               " * a valid message to encode (encode_<message>).",
+               " *",
+               " *   clang -std=c23 -g -fsanitize=fuzzer,address,undefined \\",
+               f" *       {p}_fuzz.c {p}_gen.c -o {p}_fuzz",
+               " */",
+               "#include <stdlib.h>", "#include <string.h>", "",
+               f'#include "{p}_gen.h"', "",
+               self.t(F_COMMON)]
+        body = []
+        for st in self.proto.structs:
+            body += self.walk(st)
+        for st in self.proto.structs:
+            body += self.build(st)
+        for st in self.proto.structs:
+            if st.is_message:
+                body += self.decode_message(st, self.exact(st))
+                body += self.encode_message(st)
+        out += [self.helpers("\n".join(body)), *body]
+        out += ["int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {",
+                "    /* An exact-size heap copy, so ASan catches any overread. */",
+                "    uint8_t *buf = malloc(size != 0 ? size : 1);",
+                "    if (size != 0)",
+                "        memcpy(buf, data, size);"]
+        for st in self.proto.structs:
+            if st.is_message:
+                out += [f"    decode_{st.name}(buf, size);",
+                        f"    encode_{st.name}(buf, size);"]
+        out += ["    free(buf);", "    return 0;", "}"]
+        return "\n".join(out) + "\n"
+
+    def helpers(self, body: str) -> str:
+        """Every F_HELPERS entry the harness calls, directly or indirectly."""
+        texts = {k: self.t(v) for k, v in F_HELPERS}
+        used, changed = set(), True
+        while changed:
+            search = body + "".join(texts[k] for k in used)
+            new = {k for k in texts if k not in used and f"{k}(" in search}
+            used |= new
+            changed = bool(new)
+        return "\n".join(texts[k] for k, _ in F_HELPERS if k in used)
+
+    # ---- decode side -------------------------------------------------------
+
+    def walk(self, st: StructDecl) -> list[str]:
+        """Touch every view and list element of a decoded struct."""
+        p, P = self.p, self.P
+        body = []
+        for op in st.ops:
+            match op:
+                case Cstr():
+                    body.append(f"    walk_cstr(&v->{op.field});")
+                case Rest() | Bytes():
+                    body.append(f"    walk_bytes(&v->{op.field});")
+                case Sub():
+                    body.append(f"    walk_{op.struct}(&v->{op.field});")
+                case List():
+                    e = f"{p}_{op.elem}"
+                    body += ["    {",
+                             f"        struct {e}_iter it;",
+                             f"        struct {e} item;",
+                             f"        {e}_iter_init(&it, &v->{op.field});",
+                             f"        while ({e}_iter_next(&it, &item))",
+                             f"            walk_{op.elem}(&item);",
+                             "    }"]
+                case Dispatch():
+                    enum = f"{P}_{op.enum.upper()}"
+                    body.append(f"    switch (v->{op.tag}) {{")
+                    for a in op.arms:
+                        body += [f"    case {enum}_{t}:" for t in a.tags]
+                        body += [f"        walk_{a.struct}(&v->{op.field}.{a.member});",
+                                 "        break;"]
+                    body.append("    default:")
+                    if op.fallback:
+                        body.append(f"        walk_bytes(&v->{op.field}.unknown);")
+                    body += ["        break;", "    }"]
+        return [f"static void walk_{st.name}(const struct {p}_{st.name} *v) {{",
+                *(body or ["    (void)v;"]), "}", ""]
+
+    def exact(self, st: StructDecl) -> bool:
+        """True if decode -> encode reproduces the input byte for byte: no
+        reserved field or padding is reachable from st."""
+        seen = set()
+        def ok(s: StructDecl) -> bool:
+            if s.name in seen:
+                return True
+            seen.add(s.name)
+            for op in s.ops:
+                match op:
+                    case Pad() | Fixed(field=None):
+                        return False
+                    case Group() if any(b.field is None and b.const is None and
+                                        b.length_of is None for b in op.bits):
+                        return False
+                    case Sub() if not ok(self.structs[op.struct]):
+                        return False
+                    case List() if not ok(self.structs[op.elem]):
+                        return False
+                    case Dispatch() if not all(ok(self.structs[a.struct]) for a in op.arms):
+                        return False
+            return True
+        return ok(st)
+
+    def decode_message(self, st: StructDecl, exact: bool) -> list[str]:
+        p, P, m = self.p, self.P, f"{self.p}_{st.name}"
+        if exact:
+            comment = ["/* Decode then encode must give back the input exactly. */"]
+            check = ["    if (memcmp(a, buf, size) != 0)",
+                     "        abort();"]
+        else:
+            comment = [f"/* {st.schema_name} has reserved fields or padding, which decode "
+                       "ignores and",
+                       " * encode writes as zeros, so the first encode may differ from the",
+                       " * input there. It must still have the same length, decode again, and",
+                       " * encode to identical bytes. */"]
+            check = [f"    struct {m} again;",
+                     f"    if ({m}_decode(&again, a, size) != {P}_OK)",
+                     "        abort();",
+                     f"    if ({m}_encode(&again, b, size, &n) != {P}_OK || n != size ||",
+                     "        memcmp(a, b, size) != 0)",
+                     "        abort();"]
+        return [*comment,
+                f"static void decode_{st.name}(const uint8_t *buf, size_t size) {{",
+                f"    struct {m} msg;",
+                f"    if ({m}_decode(&msg, buf, size) != {P}_OK)",
+                "        return;",
+                f"    walk_{st.name}(&msg);",
+                f"    if ({m}_encoded_size(&msg) != size)",
+                "        abort();",
+                "    uint8_t *a = malloc(size != 0 ? size : 1);",
+                "    uint8_t *b = malloc(size != 0 ? size : 1);",
+                "    size_t n = 0;",
+                f"    if ({m}_encode(&msg, a, size, &n) != {P}_OK || n != size)",
+                "        abort();",
+                f"    if (size != 0 && {m}_encode(&msg, b, size - 1, &n) != {P}_NOSPACE)",
+                "        abort();",
+                *check,
+                "    free(a);",
+                "    free(b);",
+                "}", ""]
+
+    # ---- encode side -------------------------------------------------------
+
+    def build(self, st: StructDecl) -> list[str]:
+        """Fill a struct with valid values chosen by the input."""
+        p, P = self.p, self.P
+        body = []
+        for op in st.ops:
+            match op:
+                case Group():
+                    for b in op.bits:
+                        if b.field is not None:
+                            mask = hex((1 << b.width) - 1)
+                            body.append(f"    v->{b.field} = ({self.member_type(b)})"
+                                        f"(take_u32(in) & {mask});")
+                case Fixed(field=None):
+                    pass
+                case Fixed(elem=1):
+                    body.append(f"    take_raw(in, v->{op.field}, {op.count});")
+                case Fixed():
+                    body += [f"    for (size_t i = 0; i < {op.count}; i++)",
+                             f"        v->{op.field}[i] = (uint{8 * op.elem}_t)take_u32(in);"]
+                case Cstr():
+                    body.append(f"    take_cstr(in, &v->{op.field});")
+                case Rest():
+                    body.append(f"    take_bytes(in, &v->{op.field}, SIZE_MAX);")
+                case Bytes():
+                    body.append(f"    take_bytes(in, &v->{op.field}, "
+                                f"{hex((1 << op.len_width) - 1)});")
+                case Sub():
+                    body.append(f"    build_{op.struct}(in, &v->{op.field});")
+                case List():
+                    e = f"{p}_{op.elem}"
+                    body += ["    {",
+                             "        size_t n = take_u8(in) % 4;",
+                             f"        struct {e} *items = arena_alloc(n * sizeof *items);",
+                             "        if (items == NULL)",
+                             "            n = 0;",
+                             "        for (size_t i = 0; i < n; i++)",
+                             f"            build_{op.elem}(in, &items[i]);",
+                             f"        v->{op.field} = (struct {e}_list){{ .items = items, "
+                             ".count = n };",
+                             "    }"]
+                case Dispatch():
+                    body += self.build_dispatch(op)
+        return [f"static void build_{st.name}(struct src *in, struct {p}_{st.name} *v) {{",
+                *(body or ["    (void)in;", "    (void)v;"]), "}", ""]
+
+    def build_dispatch(self, d: Dispatch) -> list[str]:
+        P, enum = self.P, self.enums[d.enum]
+        prefix = f"{P}_{d.enum.upper()}"
+        values = dict(enum.variants)
+        cases = [(f"{prefix}_{t}", a) for a in d.arms for t in a.tags]
+        unknown = None
+        if d.fallback:  # a value no arm handles, if the enum's width has one
+            listed = {values[t] for a in d.arms for t in a.tags}
+            unknown = next((v for v in range(1 << enum.width) if v not in listed), None)
+        n = len(cases) + (unknown is not None)
+        lines = [f"    switch (take_u8(in) % {n}) {{"]
+        for i, (tag, a) in enumerate(cases):
+            lines += [f"    case {i}:",
+                      f"        v->{d.tag} = {tag};",
+                      f"        build_{a.struct}(in, &v->{d.field}.{a.member});",
+                      "        break;"]
+        if unknown is not None:
+            lines += ["    default:",
+                      f"        v->{d.tag} = (enum {self.p}_{d.enum}){unknown};  /* no arm */",
+                      f"        take_bytes(in, &v->{d.field}.unknown, SIZE_MAX);",
+                      "        break;"]
+        else:  # the last case catches everything, so -Wswitch needs no default
+            lines = [l if l != f"    case {len(cases) - 1}:" else "    default:" for l in lines]
+        return lines + ["    }"]
+
+    def encode_message(self, st: StructDecl) -> list[str]:
+        p, P, m = self.p, self.P, f"{self.p}_{st.name}"
+        over_max = []
+        if st.max_declared:
+            over_max = [f"    if (size > {P}_{st.name.upper()}_MAX_SIZE) {{",
+                        f"        if ({m}_encode(&msg, NULL, 0, &n) != {P}_INVALID)",
+                        "            abort();",
+                        "        return;",
+                        "    }"]
+        return [f"/* Build a valid {st.schema_name} from the input, then encode it: it must take",
+                " * exactly encoded_size bytes, decode, and encode to identical bytes. */",
+                f"static void encode_{st.name}(const uint8_t *data, size_t len) {{",
+                "    struct src in = { data, data + len };",
+                f"    struct {m} msg = {{}};",
+                *(["    arena_used = 0;"] if self.uses_arena else []),
+                f"    build_{st.name}(&in, &msg);",
+                f"    size_t size = {m}_encoded_size(&msg);",
+                "    size_t n = 0;",
+                *over_max,
+                "    uint8_t *a = malloc(size != 0 ? size : 1);",
+                "    uint8_t *b = malloc(size != 0 ? size : 1);",
+                f"    if ({m}_encode(&msg, a, size, &n) != {P}_OK || n != size)",
+                "        abort();",
+                f"    struct {m} back;",
+                f"    if ({m}_decode(&back, a, size) != {P}_OK)",
+                "        abort();",
+                f"    if ({m}_encode(&back, b, size, &n) != {P}_OK || n != size ||",
+                "        memcmp(a, b, size) != 0)",
+                "        abort();",
+                "    free(a);",
+                "    free(b);",
+                "}", ""]
+
+
 def emit(proto: Proto) -> tuple[str, str]:
     e = Emitter(proto)
     return e.header(), e.source()
+
+
+def emit_fuzz(proto: Proto) -> str:
+    return FuzzEmitter(proto).harness()
+
+
+# ---- fuzz harness templates ------------------------------------------------------
+
+F_COMMON = """\
+/* Recipe input: choices are read from [p, end); past the end, they are 0. */
+struct src {
+    const uint8_t *p;
+    const uint8_t *end;
+};
+"""
+
+# Emitted in this order, each only if the harness calls it.
+F_HELPERS = [
+    ("take_u8", """\
+static uint8_t take_u8(struct src *in) {
+    return in->p < in->end ? *in->p++ : 0;
+}
+"""),
+    ("take_u32", """\
+static uint32_t take_u32(struct src *in) {
+    uint32_t v = 0;
+    for (int i = 0; i < 4; i++)
+        v = v << 8 | take_u8(in);
+    return v;
+}
+"""),
+    ("take_raw", """\
+static void take_raw(struct src *in, uint8_t *dst, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        dst[i] = take_u8(in);
+}
+"""),
+    ("arena_alloc", """\
+/* Storage for list items and strings built from one recipe. */
+static alignas(max_align_t) uint8_t arena[1 << 16];
+static size_t arena_used;
+
+static void *arena_alloc(size_t n) {
+    size_t a = alignof(max_align_t);
+    size_t at = (arena_used + a - 1) / a * a;
+    if (n == 0 || n > sizeof arena - at)
+        return NULL;
+    arena_used = at + n;
+    return arena + at;
+}
+"""),
+    ("walk_bytes", """\
+static volatile uint8_t sink;
+
+static void walk_bytes(const struct ${p}_bytes *v) {
+    if (v->len != 0)
+        sink = v->ptr[v->len - 1];
+}
+"""),
+    ("take_bytes", """\
+/* A view into the recipe itself: up to max bytes, as many as remain. */
+static void take_bytes(struct src *in, struct ${p}_bytes *v, size_t max) {
+    size_t n = (size_t)take_u8(in) << 8 | take_u8(in);
+    size_t left = (size_t)(in->end - in->p);
+    n = n % (max < SIZE_MAX ? max + 1 : SIZE_MAX);
+    v->len = n < left ? n : left;
+    v->ptr = in->p;
+    in->p += v->len;
+}
+"""),
+    ("walk_cstr", """\
+static void walk_cstr(const struct ${p}_cstr *v) {
+    if (v->ptr[v->len] != '\\0')
+        abort();
+}
+"""),
+    ("take_cstr", """\
+/* A short string without NULs, copied into the arena. */
+static void take_cstr(struct src *in, struct ${p}_cstr *v) {
+    size_t n = take_u8(in) % 16;
+    char *s = arena_alloc(n + 1);
+    if (s == NULL)
+        n = 0, s = "";
+    for (size_t i = 0; i < n; i++) {
+        uint8_t c = take_u8(in);
+        s[i] = (char)(c != 0 ? c : 'x');
+    }
+    v->ptr = s;
+    v->len = n;
+}
+"""),
+]
 
 
 # ---- templates ----------------------------------------------------------------

@@ -279,15 +279,18 @@ depends on nothing.
    lengths are wrapped by one helper, so all output stays within 79
    columns. Long schema comments wrap one field per line.
 
-`python3 pktc.py SCHEMA [-o OUTDIR]` runs all four stages and writes
-`<proto>_gen.h` and `<proto>_gen.c` (next to the schema by default).
+`python3 pktc.py SCHEMA [-o OUTDIR] [--fuzz]` runs all four stages and
+writes `<proto>_gen.h` and `<proto>_gen.c` (next to the schema by
+default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness (see
+"Testing").
 
 ## Testing
 
-- **Golden files:** the generated code in `examples/tftp` and
-  `examples/pcp` is committed; `tests/test_emit.py` regenerates it and
-  fails if it differs. After changing the emitter, regenerate with
-  `python3 pktc.py examples/<proto>/<proto>.schema` and review the diff.
+- **Golden files:** the generated code and fuzz harness in
+  `examples/tftp` and `examples/pcp` are committed; `tests/test_emit.py`
+  regenerates them and fails if they differ. After changing the emitter,
+  regenerate with `python3 pktc.py examples/<proto>/<proto>.schema --fuzz`
+  and review the diff.
 - **Example tests:** `test_tftp.c` and `test_pcp.c` (PCP packets laid out
   from RFC 6887) are compiled with `-Werror` and sanitizers and run by
   `tests/test_emit.py`.
@@ -299,18 +302,35 @@ depends on nothing.
   computed `MAX_SIZE`).
 - **Round trip:** decode then encode gives back the same bytes, except for
   reserved fields and padding, which come back as zeros.
-- **Fuzzing (libFuzzer via clang):** `fuzz_<proto>.c` in each example.
-  Decode never crashes or reads out of bounds. Anything that decodes
-  re-encodes to the same length, the result decodes again, and
-  re-encoding that gives identical bytes.
+- **Fuzzing (libFuzzer via clang):** the harness is generated
+  (`pktc.py --fuzz`), so every schema gets one. Each input is used twice:
+  - *As a packet:* decode it; touch every view, list element and union arm
+    so ASan checks them; it must re-encode to its own length, and fail with
+    `NOSPACE` one byte short. Messages with no reserved fields or padding
+    must re-encode to identical bytes. Messages with them must decode
+    again and then re-encode identically, since reserved bytes and padding
+    come back as zeros.
+  - *As a recipe:* generated `build_<struct>` functions read choices from
+    it (tags, list counts, view lengths, field values masked to their
+    widths) and build a valid message. It must encode to exactly
+    `encoded_size` bytes (or be `INVALID` only when over a declared `max`),
+    decode, and re-encode identically. Decoding random bytes alone rarely
+    gets past length fields and padding: in a test with a bug planted in
+    PCP option padding, decode-only fuzzing missed it for minutes, while
+    the recipe side found it in about 4,000 runs.
+
+  `tests/test_emit.py` generates and runs the harness for TFTP, PCP,
+  `demo` and `bits` for 3 seconds each when clang is available. For
+  longer runs, build the committed `examples/<proto>/<proto>_fuzz.c` with
+  the command in its header comment.
 
 ## Next steps
 
 1. ~~Hand-write `examples/tftp/tftp_gen.c` to match `tftp_gen.h`, with a
    round-trip test and a fuzz harness.~~ Done: `tftp_gen.c` is the
    emitter's target output; `test_tftp.c` holds the round-trip and edge-case
-   tests; `fuzz_tftp.c` is the libFuzzer harness (build command in its
-   header comment).
+   tests. The hand-written fuzz harness was later replaced by a generated
+   one (`tftp_fuzz.c`).
 2. ~~Write the checker.~~ Done: `check.py`, tests in `tests/test_check.py`.
 3. ~~Write the IR and C emitter, and make it reproduce the hand-written TFTP
    code.~~ Done: `ir.py`, `emit.py`, `pktc.py`. The committed TFTP code is
@@ -326,4 +346,4 @@ depends on nothing.
      on byte-length-prefixed lists (see "Deferred").
    - Emit a standalone Lark parser so the compiler has no dependencies
      either.
-   - Add a Makefile (or similar) for the C tests and fuzzers.
+   - Add a Makefile (or similar) for the C tests and long fuzz runs.

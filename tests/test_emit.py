@@ -10,7 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from check import check  # noqa: E402
-from emit import emit  # noqa: E402
+from emit import emit, emit_fuzz  # noqa: E402
 from ir import lower  # noqa: E402
 from pktc import compile_schema  # noqa: E402
 from schema import parse  # noqa: E402
@@ -18,6 +18,8 @@ from schema import parse  # noqa: E402
 CFLAGS = ["-std=c23", "-Wall", "-Wextra", "-pedantic", "-Werror"]
 SANITIZE = ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
 HAVE_GCC = shutil.which("gcc") is not None
+HAVE_CLANG = shutil.which("clang") is not None
+FUZZ_SECONDS = 3
 
 # Covers what TFTP does not: u8/u32 fields, a u32 enum, an enum field that is
 # not a switch tag, a nested struct, a switch in a non-message struct that
@@ -208,15 +210,21 @@ def generate(text: str, source: str = "test.schema") -> tuple[str, str]:
     return emit(lower(s, source))
 
 
+def fuzz_source(text: str, source: str = "test.schema") -> str:
+    s = parse(text)
+    check(s)
+    return emit_fuzz(lower(s, source))
+
+
 class Golden(unittest.TestCase):
     """The committed example code must be what the generator produces now."""
     def check_example(self, proto: str):
         d = ROOT / "examples" / proto
-        name, h, c = compile_schema(d / f"{proto}.schema")
+        name, files = compile_schema(d / f"{proto}.schema", fuzz=True)
         self.assertEqual(name, proto)
-        stale = f"is stale: run python3 pktc.py examples/{proto}/{proto}.schema"
-        self.assertEqual(h, (d / f"{proto}_gen.h").read_text(), f"{proto}_gen.h {stale}")
-        self.assertEqual(c, (d / f"{proto}_gen.c").read_text(), f"{proto}_gen.c {stale}")
+        stale = f"is stale: run python3 pktc.py examples/{proto}/{proto}.schema --fuzz"
+        for fname, text in files.items():
+            self.assertEqual(text, (d / fname).read_text(), f"{fname} {stale}")
 
     def test_tftp(self):
         self.check_example("tftp")
@@ -248,8 +256,13 @@ class Output(unittest.TestCase):
     def test_lines_fit(self):
         for text in (DEMO, BITS):
             h, c = generate(text)
-            long = [l for l in (h + c).splitlines() if len(l) > 79]
+            f = emit_fuzz(lower(parse(text), "x.schema"))
+            long = [l for l in (h + c + f).splitlines() if len(l) > 79]
             self.assertEqual(long, [])
+
+    def test_strict_round_trip_only_without_reserved(self):
+        self.assertIn("give back the input exactly", fuzz_source(DEMO))
+        self.assertIn("has reserved fields or padding", fuzz_source(BITS))
 
 
 @unittest.skipUnless(HAVE_GCC, "gcc not found")
@@ -288,6 +301,46 @@ class Compiles(unittest.TestCase):
 
     def test_pcp(self):
         self.run_example("pcp")
+
+
+@unittest.skipUnless(HAVE_CLANG, "clang not found")
+class Fuzz(unittest.TestCase):
+    """Generate each protocol's libFuzzer harness and run it briefly. The
+    encode-side recipes reach deep structure within seconds."""
+
+    def fuzz(self, files: dict[str, str], harness: str, gen: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp)
+            for name, text in files.items():
+                (d / name).write_text(text)
+            build = subprocess.run(
+                ["clang", *CFLAGS, "-g", "-fsanitize=fuzzer,address,undefined",
+                 harness, gen, "-o", "fuzz"], cwd=d, capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            run = subprocess.run(
+                ["./fuzz", f"-max_total_time={FUZZ_SECONDS}", "-max_len=1200"],
+                cwd=d, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr[-3000:])
+
+    def fuzz_text(self, name: str, text: str):
+        s = parse(text)
+        check(s)
+        proto = lower(s, f"{name}.schema")
+        h, c = emit(proto)
+        self.fuzz({f"{name}_gen.h": h, f"{name}_gen.c": c, f"{name}_fuzz.c": emit_fuzz(proto)},
+                  f"{name}_fuzz.c", f"{name}_gen.c")
+
+    def test_tftp(self):
+        self.fuzz_text("tftp", (ROOT / "examples/tftp/tftp.schema").read_text())
+
+    def test_pcp(self):
+        self.fuzz_text("pcp", (ROOT / "examples/pcp/pcp.schema").read_text())
+
+    def test_demo(self):
+        self.fuzz_text("demo", DEMO)
+
+    def test_bits(self):
+        self.fuzz_text("bits", BITS)
 
 
 if __name__ == "__main__":
