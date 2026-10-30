@@ -1,6 +1,7 @@
 """pktc: schema -> <proto>_gen.h + <proto>_gen.c (+ <proto>_fuzz.c).
 
     python3 pktc.py SCHEMA [-o OUTDIR] [--fuzz]
+    python3 pktc.py --version
 
 OUTDIR defaults to the schema's directory. --fuzz also writes a libFuzzer
 harness for the generated code.
@@ -13,6 +14,8 @@ from check import SchemaError, check
 from emit import emit, emit_fuzz
 from ir import lower
 from schema import ParseError, parse
+
+__version__ = "0.1.0"
 
 
 def compile_schema(path: pathlib.Path, fuzz: bool = False) -> tuple[str, dict[str, str]]:
@@ -32,6 +35,7 @@ def main() -> int:
     ap.add_argument("schema", type=pathlib.Path)
     ap.add_argument("-o", "--outdir", type=pathlib.Path)
     ap.add_argument("--fuzz", action="store_true", help="also write <proto>_fuzz.c")
+    ap.add_argument("--version", action="version", version=f"pktc {__version__}")
     args = ap.parse_args()
     try:
         _, files = compile_schema(args.schema, args.fuzz)

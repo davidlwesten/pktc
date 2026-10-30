@@ -68,8 +68,8 @@ struct Attribute {
 }
 ```
 
-`python3 pktc.py examples/stun/stun.pkt` writes `stun_gen.h` and
-`stun_gen.c`. Using them:
+`pktc examples/stun/stun.pkt` writes `stun_gen.h` and `stun_gen.c`.
+Using them:
 
 ```c
 #include <stdio.h>
@@ -108,25 +108,46 @@ size_t binding_request(uint8_t *buf, size_t cap, const uint8_t txid[12]) {
 You never set `length`: encode measures the attributes and writes it, and
 decode checks that it matches.
 
-## Getting started
+## Installing
 
-You need:
-- Python 3.10 or later, with [Lark](https://github.com/lark-parser/lark)
-  (`pip install lark`), to run the compiler from source or build it.
-- A C23 compiler for the generated code. The generated code uses
-  `constexpr` and enums with a fixed underlying type. It is tested with
-  GCC 16 and Clang 23.
+pktc is a single file, `pktc.pyz`, that needs only Python 3.10 or later.
+Download it from the [latest release][release]:
 
 ```sh
-make                                   # builds pktc.pyz
-./pktc.pyz my.pkt                      # writes <protocol>_gen.h and _gen.c
-./pktc.pyz my.pkt -o out/ --fuzz       # also writes <protocol>_fuzz.c
+curl -Lo ~/.local/bin/pktc \
+    https://github.com/<owner>/pktc/releases/latest/download/pktc.pyz
+chmod +x ~/.local/bin/pktc
 ```
 
-`pktc.pyz` is a single file with Lark inside: copy it anywhere that has
-Python 3.10 or later. Errors point at the schema, for example
-`my.pkt:12: Opt.data: length field 'n' must be declared earlier in the
-same struct`.
+Or build and install it from a clone, which needs
+[Lark](https://github.com/lark-parser/lark) (`pip install -r
+requirements.txt`; the build bundles it):
+
+```sh
+make install                  # installs ~/.local/bin/pktc
+make install PREFIX=/usr/local
+```
+
+[release]: https://github.com/<owner>/pktc/releases/latest
+
+Projects that use pktc usually commit the generated `.c` and `.h` files, as
+`examples/` does. Then only whoever changes a schema needs pktc; everyone
+else needs just a C compiler.
+
+The generated code needs a C23 compiler: it uses `constexpr` and enums
+with a fixed underlying type. CI tests it with GCC 13 and 14, Clang 20 and
+Homebrew's LLVM on macOS.
+
+## Usage
+
+```sh
+pktc my.pkt                   # writes <protocol>_gen.h and <protocol>_gen.c
+pktc my.pkt -o out/ --fuzz    # into out/, plus a libFuzzer harness
+pktc --version
+```
+
+Errors point at the schema, for example `my.pkt:12: Opt.data: length
+field 'n' must be declared earlier in the same struct`.
 
 ## The schema language
 
@@ -201,6 +222,10 @@ make check                        # each example's C tests, with sanitizers
 make fuzz-stun FUZZ_SECONDS=600   # a long fuzz run (needs clang)
 make examples                     # regenerate examples/ after changing pktc
 ```
+
+CI runs the tests and the C tests on every push, across Python versions and
+compilers. It builds the fuzz harnesses but does not run them; fuzzing is
+too CPU-hungry for CI, so run `make fuzz` locally after changing the emitter.
 
 ## License
 

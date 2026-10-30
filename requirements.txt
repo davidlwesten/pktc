@@ -1,0 +1,2 @@
+# Needed to run pktc from source and to build pktc.pyz, which bundles it.
+lark==1.3.1

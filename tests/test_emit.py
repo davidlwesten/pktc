@@ -1,4 +1,5 @@
 """Generator tests. Run with: python3 -m unittest discover tests"""
+import os
 import pathlib
 import shutil
 import subprocess
@@ -12,15 +13,22 @@ sys.path.insert(0, str(ROOT))
 from check import check  # noqa: E402
 from emit import emit, emit_fuzz  # noqa: E402
 from ir import lower  # noqa: E402
+import pktc  # noqa: E402
 from pktc import compile_schema  # noqa: E402
 from schema import parse  # noqa: E402
 
 CFLAGS = ["-std=c23", "-Wall", "-Wextra", "-pedantic", "-Werror"]
 SANITIZE = ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
-HAVE_GCC = shutil.which("gcc") is not None
-HAVE_CLANG = shutil.which("clang") is not None
+# Environment knobs, for CI:
+#   CC                  C compiler for the example and generated-code tests
+#   PKTC_FUZZ_CC        clang for the libFuzzer harnesses ("" skips them)
+#   PKTC_FUZZ_SECONDS   how long to run each harness (0: only build it)
+CC = os.environ.get("CC") or "gcc"
+FUZZ_CC = os.environ.get("PKTC_FUZZ_CC", "clang")
+FUZZ_SECONDS = int(os.environ.get("PKTC_FUZZ_SECONDS", "3"))
+HAVE_CC = shutil.which(CC) is not None
+HAVE_FUZZ_CC = bool(FUZZ_CC) and shutil.which(FUZZ_CC) is not None
 HAVE_MAKE = shutil.which("make") is not None
-FUZZ_SECONDS = 3
 EXAMPLES = ["tftp", "pcp", "ntp", "stun"]
 
 # Covers what TFTP does not: u8/u32 fields, a u32 enum, an enum field that is
@@ -335,8 +343,12 @@ class Package(unittest.TestCase):
             self.assertEqual(run.returncode, 1)
             self.assertEqual(run.stderr, f"{bad}:2:19: unexpected '}}'\n")
 
+            run = subprocess.run([sys.executable, "-S", str(pyz), "--version"],
+                                 capture_output=True, text=True)
+            self.assertEqual(run.stdout, f"pktc {pktc.__version__}\n")
 
-@unittest.skipUnless(HAVE_GCC, "gcc not found")
+
+@unittest.skipUnless(HAVE_CC, f"{CC} not found")
 class Compiles(unittest.TestCase):
     def build_and_run(self, files: dict[str, str], sources: list[str]) -> str:
         with tempfile.TemporaryDirectory() as tmp:
@@ -344,7 +356,7 @@ class Compiles(unittest.TestCase):
             for name, text in files.items():
                 (d / name).write_text(text)
             exe = d / "a.out"
-            subprocess.run(["gcc", *CFLAGS, *SANITIZE, *sources, "-o", str(exe)],
+            subprocess.run([CC, *CFLAGS, *SANITIZE, *sources, "-o", str(exe)],
                            cwd=d, check=True, capture_output=True, text=True)
             return subprocess.run([str(exe)], cwd=d, capture_output=True, text=True).stdout
 
@@ -380,10 +392,11 @@ class Compiles(unittest.TestCase):
         self.run_example("stun")
 
 
-@unittest.skipUnless(HAVE_CLANG, "clang not found")
+@unittest.skipUnless(HAVE_FUZZ_CC, f"{FUZZ_CC or 'fuzzing'} not available")
 class Fuzz(unittest.TestCase):
-    """Generate each protocol's libFuzzer harness and run it briefly. The
-    encode-side recipes reach deep structure within seconds."""
+    """Generate each protocol's libFuzzer harness and run it briefly (or,
+    with PKTC_FUZZ_SECONDS=0, only build it). The encode-side recipes
+    reach deep structure within seconds."""
 
     def fuzz(self, files: dict[str, str], harness: str, gen: str):
         with tempfile.TemporaryDirectory() as tmp:
@@ -391,9 +404,11 @@ class Fuzz(unittest.TestCase):
             for name, text in files.items():
                 (d / name).write_text(text)
             build = subprocess.run(
-                ["clang", *CFLAGS, "-g", "-fsanitize=fuzzer,address,undefined",
+                [FUZZ_CC, *CFLAGS, "-g", "-fsanitize=fuzzer,address,undefined",
                  harness, gen, "-o", "fuzz"], cwd=d, capture_output=True, text=True)
             self.assertEqual(build.returncode, 0, build.stderr)
+            if FUZZ_SECONDS == 0:
+                return
             run = subprocess.run(
                 ["./fuzz", f"-max_total_time={FUZZ_SECONDS}", "-max_len=1200"],
                 cwd=d, capture_output=True, text=True)

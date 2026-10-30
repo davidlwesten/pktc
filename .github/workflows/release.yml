@@ -1,0 +1,46 @@
+# Pushing a tag vX.Y.Z publishes a GitHub release with pktc.pyz attached.
+# The tag must match pktc.py's __version__: bump it, commit, then tag.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - run: pip install -r requirements.txt
+
+      - name: Check the tag matches pktc --version
+        run: |
+          want="pktc ${GITHUB_REF_NAME#v}"
+          got="$(python3 pktc.py --version)"
+          if [ "$got" != "$want" ]; then
+            echo "tag $GITHUB_REF_NAME, but pktc.py says '$got'" >&2
+            exit 1
+          fi
+
+      # CI already covers the compiler matrix; this is a last check.
+      - name: Test
+        run: make test
+        env:
+          PKTC_FUZZ_CC: ""
+
+      - run: make
+
+      - name: Publish
+        run: |
+          gh release create "$GITHUB_REF_NAME" pktc.pyz \
+            --title "pktc ${GITHUB_REF_NAME#v}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

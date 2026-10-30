@@ -292,6 +292,15 @@ with the interpreter inside (PyInstaller, Nuitka: no Python needed, but
 generated C almost certainly has Python, so the zipapp is enough for now;
 a native build can be added on top if that changes.
 
+Users download `pktc.pyz` from a GitHub release, or run `make install`
+(`~/.local/bin/pktc`, or `PREFIX=...`). Pushing a tag `vX.Y.Z` runs
+`.github/workflows/release.yml`, which checks the tag matches `pktc
+--version` (`__version__` in `pktc.py`), builds the pyz and attaches it to
+the release. `requirements.txt` pins Lark, so a release bundles a known
+version. pip/pipx installs are not offered: the modules are top-level
+(`schema`, `check`, `ir`, `emit`) and would collide with other packages in
+site-packages; they would have to move into a `pktc/` package first.
+
 1. **Parse (done):** `schema.py`, a Lark grammar plus a transformer into
    dataclasses. `python3 schema.py FILE` prints the AST. Syntax errors are
    reported as `file:line:column: unexpected '}'`, like the checker's
@@ -398,9 +407,17 @@ default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness (see
     the recipe side found it in about 4,000 runs.
 
   `tests/test_emit.py` generates and runs the harness for each example,
-  `demo` and `bits` for 3 seconds each when clang is available. For
+  `demo` and `bits` for 3 seconds each when clang is available.
+  `PKTC_FUZZ_SECONDS=0` only builds the harnesses, and `PKTC_FUZZ_CC=`
+  (empty) skips them; `CC` picks the compiler for the C tests. For
   longer runs, build the committed `examples/<proto>/<proto>_fuzz.c` with
   the command in its header comment.
+
+- **CI** (`.github/workflows/ci.yml`) runs `make test` and `make check`
+  on every push and pull request: Python 3.10 and the latest, GCC 13 and
+  14, Clang 20, and Homebrew LLVM on macOS. It builds the fuzz harnesses
+  but never runs them (`PKTC_FUZZ_SECONDS=0`): fuzzing is too CPU-hungry
+  for CI, so it stays a local `make fuzz`.
 
 ## Next steps
 

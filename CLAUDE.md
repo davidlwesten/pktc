@@ -13,6 +13,8 @@ generated C, the validation rules and the next steps.
   briefly if clang is installed). After changing the emitter, run `make
   examples` and review the diff. `make check` runs the C tests, `make
   fuzz-<proto> FUZZ_SECONDS=600` a long fuzz run.
+- To release: bump `__version__` in `pktc.py`, commit, and push a tag
+  `v<version>`; CI publishes `pktc.pyz` to a GitHub release.
 - Keep the language small: add a construct only when a target protocol needs
   it, and push one-off oddities to the escape hatch.
 - Check generated or example C with

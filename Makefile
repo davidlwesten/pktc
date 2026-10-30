@@ -7,9 +7,11 @@
 #   make fuzz         fuzz each example for FUZZ_SECONDS (needs clang)
 #   make fuzz-stun    fuzz one example
 #   make examples     regenerate examples/ after changing the emitter
+#   make install      install pktc.pyz as $(PREFIX)/bin/pktc (default ~/.local)
+#   make uninstall
 
 PYTHON ?= python3
-CC ?= gcc
+# CC is make's default (cc) unless set, e.g. make check CC=clang
 CFLAGS ?= -std=c23 -Wall -Wextra -pedantic -Werror
 SANITIZE = -g -fsanitize=address,undefined -fno-sanitize-recover=all
 FUZZ_SECONDS ?= 60
@@ -18,6 +20,7 @@ EXAMPLES = tftp pcp ntp stun
 SOURCES = pktc.py schema.py check.py ir.py emit.py
 BUILD ?= build
 PYZ ?= pktc.pyz
+PREFIX ?= $(HOME)/.local
 
 all: $(PYZ)
 
@@ -63,7 +66,14 @@ fuzz-%:
 	    examples/$*/$*_fuzz.c examples/$*/$*_gen.c -o $(BUILD)/fuzz-$*/fuzz
 	cd $(BUILD)/fuzz-$* && ./fuzz -max_total_time=$(FUZZ_SECONDS) -max_len=1200 corpus
 
+install: $(PYZ)
+	install -d $(DESTDIR)$(PREFIX)/bin
+	install -m 755 $(PYZ) $(DESTDIR)$(PREFIX)/bin/pktc
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/pktc
+
 clean:
 	rm -rf $(BUILD) $(PYZ)
 
-.PHONY: all examples test check fuzz clean
+.PHONY: all examples test check fuzz install uninstall clean

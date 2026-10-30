@@ -1,0 +1,76 @@
+# Compiler tests and example C tests across Python versions and C23
+# compilers. Fuzz harnesses are built but never run (PKTC_FUZZ_SECONDS=0):
+# fuzzing is too CPU-hungry for CI; run `make fuzz` locally.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }}, Python ${{ matrix.python }}, ${{ matrix.cc }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Python 3.10 is the oldest the compiler supports.
+          - { os: ubuntu-24.04, python: "3.10", cc: gcc-14 }
+          - { os: ubuntu-24.04, python: "3.x", cc: gcc-13 }
+          - { os: ubuntu-24.04, python: "3.x", cc: clang-20 }
+          - { os: macos-latest, python: "3.x", cc: brew-llvm }
+    env:
+      PKTC_FUZZ_SECONDS: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - run: pip install -r requirements.txt
+
+      - name: Install GCC
+        if: startsWith(matrix.cc, 'gcc-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cc }}
+          echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "PKTC_FUZZ_CC=" >> "$GITHUB_ENV"  # libFuzzer is clang-only
+
+      - name: Install Clang
+        if: startsWith(matrix.cc, 'clang-')
+        run: |
+          v=${{ matrix.cc }}
+          v=${v#clang-}
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh "$v"
+          sudo apt-get install -y "libclang-rt-$v-dev"  # sanitizers, libFuzzer
+          echo "CC=clang-$v" >> "$GITHUB_ENV"
+          echo "PKTC_FUZZ_CC=clang-$v" >> "$GITHUB_ENV"
+
+      # Apple's clang has no libFuzzer; Homebrew's LLVM does.
+      - name: Install Homebrew LLVM
+        if: matrix.cc == 'brew-llvm'
+        run: |
+          brew install llvm
+          echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
+          echo "PKTC_FUZZ_CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
+
+      - run: $CC --version
+
+      - name: Compiler tests
+        run: make test
+
+      - name: Example C tests
+        run: make check
+
+      - name: Build pktc.pyz
+        run: |
+          make
+          ./pktc.pyz --version
