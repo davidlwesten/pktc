@@ -30,10 +30,17 @@ jobs:
             exit 1
           fi
 
+      # Ubuntu 24.04's gcc is GCC 13, which does not accept -std=c23.
+      - name: Install GCC 14
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14
+
       # CI already covers the compiler matrix; this is a last check.
       - name: Test
         run: make test
         env:
+          CC: gcc-14
           PKTC_FUZZ_CC: ""
 
       - run: make
