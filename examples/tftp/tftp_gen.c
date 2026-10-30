@@ -1,4 +1,4 @@
-/* Generated from tftp.schema -- do not edit. */
+/* Generated from tftp.pkt -- do not edit. */
 #include "tftp_gen.h"
 
 #include <string.h>

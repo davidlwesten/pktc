@@ -1,4 +1,4 @@
-/* Generated from ntp.schema -- do not edit.
+/* Generated from ntp.pkt -- do not edit.
  *
  * libFuzzer harness for the code in ntp_gen.c. Each input is used twice:
  * as a packet to decode (decode_<message>), and as a recipe for building

@@ -42,7 +42,7 @@ $(PYZ): $(SOURCES)
 	$(PYTHON) -m zipapp $(BUILD)/pyz -p '/usr/bin/env python3' -c -o $@
 
 examples:
-	for p in $(EXAMPLES); do $(PYTHON) pktc.py examples/$$p/$$p.schema --fuzz || exit 1; done
+	for p in $(EXAMPLES); do $(PYTHON) pktc.py examples/$$p/$$p.pkt --fuzz || exit 1; done
 
 test:
 	$(PYTHON) -m unittest discover tests

@@ -1,4 +1,4 @@
-/* Generated from pcp.schema -- do not edit.
+/* Generated from pcp.pkt -- do not edit.
  *
  * libFuzzer harness for the code in pcp_gen.c. Each input is used twice:
  * as a packet to decode (decode_<message>), and as a recipe for building

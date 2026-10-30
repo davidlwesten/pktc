@@ -1,4 +1,4 @@
-/* Generated from ntp.schema -- do not edit. */
+/* Generated from ntp.pkt -- do not edit. */
 #include "ntp_gen.h"
 
 #include <string.h>

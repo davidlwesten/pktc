@@ -48,7 +48,7 @@ In exchange, it does deliberately little:
 
 ## Example
 
-Part of [`examples/stun/stun.schema`](examples/stun/stun.schema)
+Part of [`examples/stun/stun.pkt`](examples/stun/stun.pkt)
 (RFC 8489):
 
 ```
@@ -68,7 +68,7 @@ struct Attribute {
 }
 ```
 
-`python3 pktc.py examples/stun/stun.schema` writes `stun_gen.h` and
+`python3 pktc.py examples/stun/stun.pkt` writes `stun_gen.h` and
 `stun_gen.c`. Using them:
 
 ```c
@@ -119,13 +119,13 @@ You need:
 
 ```sh
 make                                   # builds pktc.pyz
-./pktc.pyz my.schema                   # writes my_gen.h and my_gen.c
-./pktc.pyz my.schema -o out/ --fuzz    # also writes my_fuzz.c
+./pktc.pyz my.pkt                      # writes <protocol>_gen.h and _gen.c
+./pktc.pyz my.pkt -o out/ --fuzz       # also writes <protocol>_fuzz.c
 ```
 
 `pktc.pyz` is a single file with Lark inside: copy it anywhere that has
 Python 3.10 or later. Errors point at the schema, for example
-`my.schema:12: Opt.data: length field 'n' must be declared earlier in the
+`my.pkt:12: Opt.data: length field 'n' must be declared earlier in the
 same struct`.
 
 ## The schema language
@@ -147,6 +147,9 @@ same struct`.
 | Tagged union on an earlier enum field | `body: switch (opcode) { MAP => Map, _ => u8[..], };` |
 | Named constant | `const SERVER_PORT: u16 = 5351;` |
 | Maximum message size, enforced both ways | `message Request max 1100 { ... }` |
+
+Schemas use the `.pkt` extension by convention. pktc accepts any file
+name, and names its output after the `protocol` declaration.
 
 A `message` is something you decode from a buffer, and gets the public
 `_decode`/`_encode`/`_encoded_size` functions. A `struct` is a reusable

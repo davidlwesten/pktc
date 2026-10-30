@@ -1,4 +1,4 @@
-/* Generated from stun.schema -- do not edit.
+/* Generated from stun.pkt -- do not edit.
  *
  * libFuzzer harness for the code in stun_gen.c. Each input is used twice:
  * as a packet to decode (decode_<message>), and as a recipe for building

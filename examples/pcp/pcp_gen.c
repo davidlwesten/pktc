@@ -1,4 +1,4 @@
-/* Generated from pcp.schema -- do not edit. */
+/* Generated from pcp.pkt -- do not edit. */
 #include "pcp_gen.h"
 
 #include <string.h>

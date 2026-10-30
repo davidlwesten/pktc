@@ -226,13 +226,13 @@ int main(void) {
 """
 
 
-def generate(text: str, source: str = "test.schema") -> tuple[str, str]:
+def generate(text: str, source: str = "test.pkt") -> tuple[str, str]:
     s = parse(text)
     check(s)
     return emit(lower(s, source))
 
 
-def fuzz_source(text: str, source: str = "test.schema") -> str:
+def fuzz_source(text: str, source: str = "test.pkt") -> str:
     s = parse(text)
     check(s)
     return emit_fuzz(lower(s, source))
@@ -242,9 +242,9 @@ class Golden(unittest.TestCase):
     """The committed example code must be what the generator produces now."""
     def check_example(self, proto: str):
         d = ROOT / "examples" / proto
-        name, files = compile_schema(d / f"{proto}.schema", fuzz=True)
+        name, files = compile_schema(d / f"{proto}.pkt", fuzz=True)
         self.assertEqual(name, proto)
-        stale = f"is stale: run python3 pktc.py examples/{proto}/{proto}.schema --fuzz"
+        stale = f"is stale: run python3 pktc.py examples/{proto}/{proto}.pkt --fuzz"
         for fname, text in files.items():
             self.assertEqual(text, (d / fname).read_text(), f"{fname} {stale}")
 
@@ -291,7 +291,7 @@ class Output(unittest.TestCase):
         self.assertNotIn("DEMO_HELLO_MAX_SIZE", h)
 
     def test_lines_fit(self):
-        examples = [(ROOT / "examples" / p / f"{p}.schema").read_text() for p in EXAMPLES]
+        examples = [(ROOT / "examples" / p / f"{p}.pkt").read_text() for p in EXAMPLES]
         for text in (DEMO, BITS, *examples):
             h, c = generate(text)
             f = fuzz_source(text)
@@ -321,14 +321,14 @@ class Package(unittest.TestCase):
             subprocess.run(["make", "-s", f"BUILD={d / 'build'}", f"PYZ={pyz}", str(pyz)],
                            cwd=ROOT, check=True, capture_output=True)
             run = subprocess.run([sys.executable, "-S", str(pyz),
-                                  str(ROOT / "examples/stun/stun.schema"), "-o", tmp, "--fuzz"],
+                                  str(ROOT / "examples/stun/stun.pkt"), "-o", tmp, "--fuzz"],
                                  capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
             for name in ("stun_gen.h", "stun_gen.c", "stun_fuzz.c"):
                 self.assertEqual((d / name).read_text(),
                                  (ROOT / "examples/stun" / name).read_text(), name)
 
-            bad = d / "bad.schema"
+            bad = d / "bad.pkt"
             bad.write_text("protocol p;\nmessage M { a: u8 }\n")
             run = subprocess.run([sys.executable, "-S", str(pyz), str(bad)],
                                  capture_output=True, text=True)
@@ -349,13 +349,13 @@ class Compiles(unittest.TestCase):
             return subprocess.run([str(exe)], cwd=d, capture_output=True, text=True).stdout
 
     def test_demo(self):
-        h, c = generate(DEMO, "demo.schema")
+        h, c = generate(DEMO, "demo.pkt")
         out = self.build_and_run({"demo_gen.h": h, "demo_gen.c": c, "t.c": DEMO_TEST},
                                  ["t.c", "demo_gen.c"])
         self.assertEqual(out.strip(), "ok")
 
     def test_bits(self):
-        h, c = generate(BITS, "bits.schema")
+        h, c = generate(BITS, "bits.pkt")
         out = self.build_and_run({"bits_gen.h": h, "bits_gen.c": c, "t.c": BITS_TEST},
                                  ["t.c", "bits_gen.c"])
         self.assertEqual(out.strip(), "ok")
@@ -402,22 +402,22 @@ class Fuzz(unittest.TestCase):
     def fuzz_text(self, name: str, text: str):
         s = parse(text)
         check(s)
-        proto = lower(s, f"{name}.schema")
+        proto = lower(s, f"{name}.pkt")
         h, c = emit(proto)
         self.fuzz({f"{name}_gen.h": h, f"{name}_gen.c": c, f"{name}_fuzz.c": emit_fuzz(proto)},
                   f"{name}_fuzz.c", f"{name}_gen.c")
 
     def test_tftp(self):
-        self.fuzz_text("tftp", (ROOT / "examples/tftp/tftp.schema").read_text())
+        self.fuzz_text("tftp", (ROOT / "examples/tftp/tftp.pkt").read_text())
 
     def test_pcp(self):
-        self.fuzz_text("pcp", (ROOT / "examples/pcp/pcp.schema").read_text())
+        self.fuzz_text("pcp", (ROOT / "examples/pcp/pcp.pkt").read_text())
 
     def test_ntp(self):
-        self.fuzz_text("ntp", (ROOT / "examples/ntp/ntp.schema").read_text())
+        self.fuzz_text("ntp", (ROOT / "examples/ntp/ntp.pkt").read_text())
 
     def test_stun(self):
-        self.fuzz_text("stun", (ROOT / "examples/stun/stun.schema").read_text())
+        self.fuzz_text("stun", (ROOT / "examples/stun/stun.pkt").read_text())
 
     def test_demo(self):
         self.fuzz_text("demo", DEMO)

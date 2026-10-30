@@ -1,4 +1,4 @@
-/* Generated from tftp.schema -- do not edit.
+/* Generated from tftp.pkt -- do not edit.
  *
  * libFuzzer harness for the code in tftp_gen.c. Each input is used twice:
  * as a packet to decode (decode_<message>), and as a recipe for building

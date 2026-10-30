@@ -1,4 +1,4 @@
-/* Generated from stun.schema -- do not edit. */
+/* Generated from stun.pkt -- do not edit. */
 #ifndef STUN_GEN_H
 #define STUN_GEN_H
 
@@ -16,7 +16,7 @@ typedef enum {
     STUN_NOSPACE,
 } stun_status;
 
-/* Constants from stun.schema. */
+/* Constants from stun.pkt. */
 constexpr uint16_t STUN_PORT         = 3478;
 constexpr uint16_t STUN_TLS_PORT     = 5349;
 constexpr uint32_t STUN_MAGIC_COOKIE = 0x2112A442;

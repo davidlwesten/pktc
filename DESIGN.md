@@ -161,7 +161,15 @@ Not supported: little-endian, varints, checksums, arbitrary expressions,
 length fields that cover anything but one array, optional fields,
 versioning, empty structs.
 
-See `examples/*/*.schema` and `tests/syntax.schema`.
+See `examples/*/*.pkt` and `tests/syntax.pkt`.
+
+**Schema files end in `.pkt`.** This is a convention only: pktc accepts any
+file name, and output names come from the `protocol` declaration. `.schema`
+was too generic: OpenLDAP and many SQL and JSON tools use it, so editors
+and GitHub could not tell the formats apart. `.pktc` was the collision-free
+alternative. `.pkt` was chosen for being shorter and reading naturally
+(`pktc stun.pkt`), even though Cisco Packet Tracer also uses it: those
+files are binary, so only desktop file associations are affected.
 
 ## Generated C
 
@@ -352,7 +360,7 @@ default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness (see
 - **Golden files:** the generated code and fuzz harness in each
   `examples/<proto>` are committed; `tests/test_emit.py`
   regenerates them and fails if they differ. After changing the emitter,
-  regenerate with `python3 pktc.py examples/<proto>/<proto>.schema --fuzz`
+  regenerate with `python3 pktc.py examples/<proto>/<proto>.pkt --fuzz`
   and review the diff.
 - **Example tests:** `test_tftp.c`, `test_pcp.c` (packets laid out from
   RFC 6887), `test_ntp.c` (RFC 5905 and 9327) and `test_stun.c` (the RFC

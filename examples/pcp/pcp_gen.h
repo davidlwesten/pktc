@@ -1,4 +1,4 @@
-/* Generated from pcp.schema -- do not edit. */
+/* Generated from pcp.pkt -- do not edit. */
 #ifndef PCP_GEN_H
 #define PCP_GEN_H
 
@@ -16,7 +16,7 @@ typedef enum {
     PCP_NOSPACE,
 } pcp_status;
 
-/* Constants from pcp.schema. */
+/* Constants from pcp.pkt. */
 constexpr uint8_t  PCP_VERSION     = 2;
 constexpr uint16_t PCP_SERVER_PORT = 5351;
 constexpr uint16_t PCP_CLIENT_PORT = 5350;

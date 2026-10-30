@@ -1,4 +1,4 @@
-/* Generated from stun.schema -- do not edit. */
+/* Generated from stun.pkt -- do not edit. */
 #include "stun_gen.h"
 
 #include <string.h>

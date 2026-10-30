@@ -28,7 +28,7 @@ def errors(text: str) -> list[tuple[int, str]]:
 
 class Valid(unittest.TestCase):
     def test_tftp(self):
-        self.assertEqual(errors((ROOT / "examples/tftp/tftp.schema").read_text()), [])
+        self.assertEqual(errors((ROOT / "examples/tftp/tftp.pkt").read_text()), [])
 
     def test_pcp_like(self):
         self.assertEqual(errors(HEADER + """
@@ -362,7 +362,7 @@ class Bounds(unittest.TestCase):
         return size_bounds(s)
 
     def test_tftp(self):
-        b = size_bounds(parse((ROOT / "examples/tftp/tftp.schema").read_text()))
+        b = size_bounds(parse((ROOT / "examples/tftp/tftp.pkt").read_text()))
         self.assertEqual(b["Packet"], (2, None))
         self.assertEqual(b["Ack"], (2, 2))
 

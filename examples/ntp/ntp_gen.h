@@ -1,4 +1,4 @@
-/* Generated from ntp.schema -- do not edit. */
+/* Generated from ntp.pkt -- do not edit. */
 #ifndef NTP_GEN_H
 #define NTP_GEN_H
 
@@ -16,7 +16,7 @@ typedef enum {
     NTP_NOSPACE,
 } ntp_status;
 
-/* Constants from ntp.schema. */
+/* Constants from ntp.pkt. */
 constexpr uint16_t NTP_PORT    = 123;
 constexpr uint8_t  NTP_VERSION = 4;
 
