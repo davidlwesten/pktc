@@ -21,7 +21,6 @@ jobs:
         include:
           # Python 3.10 is the oldest the compiler supports.
           - { os: ubuntu-24.04, python: "3.10", cc: gcc-14 }
-          - { os: ubuntu-24.04, python: "3.x", cc: gcc-13 }
           - { os: ubuntu-24.04, python: "3.x", cc: clang-20 }
           - { os: macos-latest, python: "3.x", cc: brew-llvm }
     env:

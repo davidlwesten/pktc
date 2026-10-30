@@ -356,9 +356,12 @@ class Compiles(unittest.TestCase):
             for name, text in files.items():
                 (d / name).write_text(text)
             exe = d / "a.out"
-            subprocess.run([CC, *CFLAGS, *SANITIZE, *sources, "-o", str(exe)],
-                           cwd=d, check=True, capture_output=True, text=True)
-            return subprocess.run([str(exe)], cwd=d, capture_output=True, text=True).stdout
+            build = subprocess.run([CC, *CFLAGS, *SANITIZE, *sources, "-o", str(exe)],
+                                   cwd=d, capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            run = subprocess.run([str(exe)], cwd=d, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            return run.stdout
 
     def test_demo(self):
         h, c = generate(DEMO, "demo.pkt")

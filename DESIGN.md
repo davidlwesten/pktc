@@ -414,8 +414,11 @@ default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness (see
   the command in its header comment.
 
 - **CI** (`.github/workflows/ci.yml`) runs `make test` and `make check`
-  on every push and pull request: Python 3.10 and the latest, GCC 13 and
-  14, Clang 20, and Homebrew LLVM on macOS. It builds the fuzz harnesses
+  on every push and pull request: Python 3.10 and the latest, GCC 14,
+  Clang 20, and Homebrew LLVM on macOS. GCC 13 was dropped: it compiles
+  the generated code, but only as `-std=c2x` (C23's draft name), and
+  supporting that meant a knob in the Makefile, tests and CI for a
+  compiler three releases old. It builds the fuzz harnesses
   but never runs them (`PKTC_FUZZ_SECONDS=0`): fuzzing is too CPU-hungry
   for CI, so it stays a local `make fuzz`.
 

@@ -135,8 +135,9 @@ Projects that use pktc usually commit the generated `.c` and `.h` files, as
 else needs just a C compiler.
 
 The generated code needs a C23 compiler: it uses `constexpr` and enums
-with a fixed underlying type. CI tests it with GCC 13 and 14, Clang 20 and
-Homebrew's LLVM on macOS.
+with a fixed underlying type, and is tested in CI with GCC 14, Clang 20
+and Homebrew's LLVM on macOS. GCC 13 is not supported: it does not accept
+`-std=c23`. On Ubuntu 24.04, `apt install gcc-14`.
 
 ## Usage
 
