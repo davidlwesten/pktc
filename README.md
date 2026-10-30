@@ -1,5 +1,7 @@
 # pktc
 
+[![CI](https://github.com/davidlwesten/pktc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/davidlwesten/pktc/actions/workflows/ci.yml)
+
 pktc is a packet compiler. You describe an existing wire format, such as the
 header and attributes of a STUN message, in a small schema language. pktc
 generates C that decodes and encodes it:
