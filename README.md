@@ -115,7 +115,7 @@ Download it from the [latest release][release]:
 
 ```sh
 curl -Lo ~/.local/bin/pktc \
-    https://github.com/<owner>/pktc/releases/latest/download/pktc.pyz
+    https://github.com/davidlwesten/pktc/releases/latest/download/pktc.pyz
 chmod +x ~/.local/bin/pktc
 ```
 
@@ -128,7 +128,7 @@ make install                  # installs ~/.local/bin/pktc
 make install PREFIX=/usr/local
 ```
 
-[release]: https://github.com/<owner>/pktc/releases/latest
+[release]: https://github.com/davidlwesten/pktc/releases/latest
 
 Projects that use pktc usually commit the generated `.c` and `.h` files, as
 `examples/` does. Then only whoever changes a schema needs pktc; everyone
