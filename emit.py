@@ -1,4 +1,4 @@
-"""Emit: IR -> <proto>_gen.h and <proto>_gen.c."""
+"""Emit: IR -> <proto>_gen.h and <proto>_gen.c (or <name>.h and <name>.c)."""
 import re
 from string import Template
 
@@ -102,9 +102,19 @@ def finish(lines: list[str], macro: str, last: str) -> list[str]:
     return lines + [last]
 
 
+def file_names(proto: str, name: str | None = None) -> tuple[str, str, str]:
+    """Output file names: (header, source, fuzz harness). By default
+    <proto>_gen.h, <proto>_gen.c and <proto>_fuzz.c; with a name,
+    <name>.h, <name>.c and <name>_fuzz.c. C names don't depend on them."""
+    if name is None:
+        return f"{proto}_gen.h", f"{proto}_gen.c", f"{proto}_fuzz.c"
+    return f"{name}.h", f"{name}.c", f"{name}_fuzz.c"
+
+
 class Emitter:
-    def __init__(self, proto: Proto):
+    def __init__(self, proto: Proto, name: str | None = None):
         self.proto = proto
+        self.h_file, self.c_file, self.fuzz_file = file_names(proto.name, name)
         self.p = proto.name.lower()
         self.P = proto.name.upper()
         ops = [op for st in proto.structs for op in st.ops]
@@ -256,7 +266,7 @@ class Emitter:
                 body += [rule(f"{st.schema_name}[..]"), "", self.c_list(st)]
         body = "\n".join(body)
         out = [f"/* Generated from {self.proto.source} -- do not edit. */",
-               f'#include "{self.p}_gen.h"', "", "#include <string.h>", "",
+               f'#include "{self.h_file}"', "", "#include <string.h>", "",
                rule("wire primitives"), "", self.primitives(body), body]
         return "\n".join(out).rstrip("\n") + "\n"
 
@@ -544,22 +554,21 @@ class FuzzEmitter(Emitter):
     """
 
     def harness(self) -> str:
-        p = self.p
         ops = [op for st in self.proto.structs for op in st.ops]
         self.uses_arena = any(isinstance(op, (Cstr, List)) for op in ops)
         self.structs = {st.name: st for st in self.proto.structs}
         self.enums = {e.name: e for e in self.proto.enums}
         out = [f"/* Generated from {self.proto.source} -- do not edit.",
                " *",
-               f" * libFuzzer harness for the code in {p}_gen.c. Each input is used twice:",
+               f" * libFuzzer harness for the code in {self.c_file}. Each input is used twice:",
                " * as a packet to decode (decode_<message>), and as a recipe for building",
                " * a valid message to encode (encode_<message>).",
                " *",
                " *   clang -std=c23 -g -fsanitize=fuzzer,address,undefined \\",
-               f" *       {p}_fuzz.c {p}_gen.c -o {p}_fuzz",
+               f" *       {self.fuzz_file} {self.c_file} -o {self.fuzz_file.removesuffix('.c')}",
                " */",
                "#include <stdlib.h>", "#include <string.h>", "",
-               f'#include "{p}_gen.h"', "",
+               f'#include "{self.h_file}"', "",
                self.t(F_COMMON)]
         body = []
         for st in self.proto.structs:
@@ -805,13 +814,13 @@ class FuzzEmitter(Emitter):
                 "}", ""]
 
 
-def emit(proto: Proto) -> tuple[str, str]:
-    e = Emitter(proto)
+def emit(proto: Proto, name: str | None = None) -> tuple[str, str]:
+    e = Emitter(proto, name)
     return e.header(), e.source()
 
 
-def emit_fuzz(proto: Proto) -> str:
-    return FuzzEmitter(proto).harness()
+def emit_fuzz(proto: Proto, name: str | None = None) -> str:
+    return FuzzEmitter(proto, name).harness()
 
 
 # ---- fuzz harness templates ------------------------------------------------------

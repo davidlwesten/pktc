@@ -146,6 +146,7 @@ and Homebrew's LLVM on macOS. GCC 13 is not supported: it does not accept
 ```sh
 pktc my.pkt                   # writes <protocol>_gen.h and <protocol>_gen.c
 pktc my.pkt -o out/ --fuzz    # into out/, plus a libFuzzer harness
+pktc my.pkt --name wire       # writes wire.h and wire.c instead
 pktc --version
 ```
 
@@ -173,7 +174,8 @@ field 'n' must be declared earlier in the same struct`.
 | Maximum message size, enforced both ways | `message Request max 1100 { ... }` |
 
 Schemas use the `.pkt` extension by convention. pktc accepts any file
-name, and names its output after the `protocol` declaration.
+name, and names its output after the `protocol` declaration unless
+`--name` is given. Either way, C names come from `protocol`.
 
 A `message` is something you decode from a buffer, and gets the public
 `_decode`/`_encode`/`_encoded_size` functions. A `struct` is a reusable

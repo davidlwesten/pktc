@@ -164,7 +164,8 @@ versioning, empty structs.
 See `examples/*/*.pkt` and `tests/syntax.pkt`.
 
 **Schema files end in `.pkt`.** This is a convention only: pktc accepts any
-file name, and output names come from the `protocol` declaration. `.schema`
+file name, and output names come from the `protocol` declaration (see
+`--name` under "Compiler pipeline" for overriding them). `.schema`
 was too generic: OpenLDAP and many SQL and JSON tools use it, so editors
 and GitHub could not tell the formats apart. `.pktc` was the collision-free
 alternative. `.pkt` was chosen for being shorter and reading naturally
@@ -359,10 +360,20 @@ site-packages; they would have to move into a `pktc/` package first.
    lengths are wrapped by one helper, so all output stays within 79
    columns. Long schema comments wrap one field per line.
 
-`python3 pktc.py SCHEMA [-o OUTDIR] [--fuzz]` runs all four stages and
-writes `<proto>_gen.h` and `<proto>_gen.c` (next to the schema by
-default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness (see
-"Testing").
+`python3 pktc.py SCHEMA [-o OUTDIR] [--name NAME] [--fuzz]` runs all four
+stages and writes `<proto>_gen.h` and `<proto>_gen.c` (next to the schema
+by default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness
+(see "Testing").
+
+**`--name NAME` renames the files, not the code:** it writes `NAME.h`,
+`NAME.c` and `NAME_fuzz.c`, and the generated `#include`s follow. The C
+prefix still comes from `protocol`, and so does the include guard
+(`<PROTO>_GEN_H`), which stays unique per protocol whatever the file is
+called. File and C names are separate because a project embedding the
+code has its own file layout: libpcp keeps PCP's wire format in
+`wire.h`/`wire.c`, but its C names have to start with `pcp_`. Making
+`protocol pcp_wire` produce the file name would have dragged the prefix
+along. `NAME` is a bare file name; `-o` picks the directory.
 
 ## Testing
 

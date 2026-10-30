@@ -310,11 +310,48 @@ class Output(unittest.TestCase):
         self.assertIn("give back the input exactly", fuzz_source(DEMO))
         self.assertIn("has reserved fields or padding", fuzz_source(BITS))
 
+    def test_name_changes_file_names_only(self):
+        # The header is unchanged and the source differs in its #include;
+        # C names still come from the protocol.
+        s = parse(DEMO)
+        check(s)
+        proto = lower(s, "demo.pkt")
+        h, c = emit(proto)
+        named_h, named_c = emit(proto, "codec")
+        self.assertEqual(named_h, h)
+        self.assertEqual(named_c, c.replace('#include "demo_gen.h"', '#include "codec.h"', 1))
+        f = emit_fuzz(proto, "codec")
+        self.assertIn('#include "codec.h"', f)
+        self.assertIn("codec_fuzz.c codec.c -o codec_fuzz", f)
+        self.assertNotIn("demo_gen", f)
+
     def test_padding_in_lists_is_exact(self):
         # Decoded lists are re-encoded from their raw bytes, padding and all.
         self.assertIn("give back the input exactly", fuzz_source(
             "protocol p; message M { n: u8; s: S[n]; }"
             " struct S { _: u8; len: u8; v: u8[len] pad 4; }"))
+
+
+class CommandLine(unittest.TestCase):
+    def pktc(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(ROOT / "pktc.py"), *args],
+                              capture_output=True, text=True)
+
+    def test_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = self.pktc(str(ROOT / "examples/stun/stun.pkt"), "-o", tmp,
+                            "--name", "stun_codec", "--fuzz")
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(sorted(p.name for p in pathlib.Path(tmp).iterdir()),
+                             ["stun_codec.c", "stun_codec.h", "stun_codec_fuzz.c"])
+
+    def test_bad_name(self):
+        schema = str(ROOT / "examples/stun/stun.pkt")
+        for name, error in [("out/stun", "is not a file name"), ("..", "is not a file name"),
+                            ("", "is not a file name"), ("stun.h", "has an extension")]:
+            run = self.pktc(schema, "--name", name)
+            self.assertEqual(run.returncode, 2, name)
+            self.assertIn(error, run.stderr)
 
 
 @unittest.skipUnless(HAVE_MAKE, "make not found")
@@ -373,6 +410,15 @@ class Compiles(unittest.TestCase):
         h, c = generate(BITS, "bits.pkt")
         out = self.build_and_run({"bits_gen.h": h, "bits_gen.c": c, "t.c": BITS_TEST},
                                  ["t.c", "bits_gen.c"])
+        self.assertEqual(out.strip(), "ok")
+
+    def test_named(self):
+        s = parse(DEMO)
+        check(s)
+        h, c = emit(lower(s, "demo.pkt"), "demo_codec")
+        test = DEMO_TEST.replace('#include "demo_gen.h"', '#include "demo_codec.h"', 1)
+        out = self.build_and_run({"demo_codec.h": h, "demo_codec.c": c, "t.c": test},
+                                 ["t.c", "demo_codec.c"])
         self.assertEqual(out.strip(), "ok")
 
     def run_example(self, proto: str):
