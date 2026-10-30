@@ -230,6 +230,12 @@ CI runs the tests and the C tests on every push, across Python versions and
 compilers. It builds the fuzz harnesses but does not run them; fuzzing is
 too CPU-hungry for CI, so run `make fuzz` locally after changing the emitter.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests and the rules for
+changing the language. [DESIGN.md](DESIGN.md) explains the decisions behind
+it and the roadmap.
+
 ## License
 
 MIT; see [LICENSE](LICENSE).

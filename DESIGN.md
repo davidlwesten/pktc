@@ -301,7 +301,7 @@ version. pip/pipx installs are not offered: the modules are top-level
 (`schema`, `check`, `ir`, `emit`) and would collide with other packages in
 site-packages; they would have to move into a `pktc/` package first.
 
-1. **Parse (done):** `schema.py`, a Lark grammar plus a transformer into
+1. **Parse:** `schema.py`, a Lark grammar plus a transformer into
    dataclasses. `python3 schema.py FILE` prints the AST. Syntax errors are
    reported as `file:line:column: unexpected '}'`, like the checker's
    errors. Lark's standalone generator (a parser module that needs no
@@ -309,7 +309,7 @@ site-packages; they would have to move into a `pktc/` package first.
    and Lark itself is MIT, and its output is not reproducible (tables are
    numbered differently from run to run). Bundling Lark in the zipapp
    gives the same single file.
-2. **Check (done):** `check.py`, `python3 check.py FILE`. It collects every
+2. **Check:** `check.py`, `python3 check.py FILE`. It collects every
    error with its line number instead of stopping at the first. After it
    passes, later stages may assume a well-formed schema. Tests:
    `python3 -m unittest discover tests`.
@@ -346,14 +346,14 @@ site-packages; they would have to move into a `pktc/` package first.
      uses itself (`<proto>_status`, `_cstr`, `_bytes`, `_rd`, `_wr`,
      `<S>_list`, `<S>_iter`, `<struct>_<switch>`, `body.unknown`, and
      constants such as `<PROTO>_OK`, `_CHECK` and `<MSG>_MAX_SIZE`).
-3. **Lower to an IR (done):** `ir.py`. A flat list of wire operations per
+3. **Lower to an IR:** `ir.py`. A flat list of wire operations per
    struct (`Group` of `Bits`, `Cstr`, `Rest`, `Bytes`, `Fixed`, `Sub`,
    `List`, `Dispatch`), with every name already in C form, and
    structs ordered dependencies first. Decode, encode and size are all
    generated from the same list, so they cannot disagree. Fixed offsets
    are not computed; the constant parts of a size are folded
    (`2 + in->data.len`).
-4. **Emit (done):** `emit.py`. Python f-strings for code that depends on
+4. **Emit:** `emit.py`. Python f-strings for code that depends on
    the schema, and `string.Template` (`${p}` = prefix) for fixed C such as
    the primitives and list functions. Signatures that depend on name
    lengths are wrapped by one helper, so all output stays within 79
@@ -422,29 +422,43 @@ default). `--fuzz` also writes `<proto>_fuzz.c`, a libFuzzer harness (see
   but never runs them (`PKTC_FUZZ_SECONDS=0`): fuzzing is too CPU-hungry
   for CI, so it stays a local `make fuzz`.
 
-## Next steps
+## Status
 
-1. ~~Hand-write `examples/tftp/tftp_gen.c` to match `tftp_gen.h`, with a
-   round-trip test and a fuzz harness.~~ Done: `tftp_gen.c` is the
-   emitter's target output; `test_tftp.c` holds the round-trip and edge-case
-   tests. The hand-written fuzz harness was later replaced by a generated
-   one (`tftp_fuzz.c`).
-2. ~~Write the checker.~~ Done: `check.py`, tests in `tests/test_check.py`.
-3. ~~Write the IR and C emitter, and make it reproduce the hand-written TFTP
-   code.~~ Done: `ir.py`, `emit.py`, `pktc.py`. The committed TFTP code is
-   now generated. The C tests and fuzzer pass against it unchanged, except
-   that `encoded_size` no longer promises 0 for an unknown tag.
-4. ~~Add PCP: bitfields, constant fields, fixed arrays, length fields,
-   padding and the `_` fallback arm, plus `const`, `max` and the size
-   constants.~~ Done: `examples/pcp/`.
-5. ~~Add NTP and STUN.~~ Done: `examples/ntp/`, `examples/stun/`. They
-   needed signed integers, `S[len]` and field padding (replacing
-   `pad(n)`), but no escape hatch.
-6. ~~Package the compiler as one file; add a Makefile.~~ Done: `make`
-   builds `pktc.pyz` (with Lark inside), and `make check`,
-   `make fuzz` (or `fuzz-<proto>`, `FUZZ_SECONDS=...`) run the C tests and
-   long fuzz runs.
-7. Candidates for next:
-   - A protocol that needs what is still deferred: DNS (element counts,
-     name compression, the first real escape hatch) or DHCP (options
-     ending at an END code, inside a fixed-size BOOTP header).
+Version 0.1.0. The pipeline is complete, and four protocols compile from
+their schemas into tested, fuzzed C: TFTP, PCP, NTP and STUN.
+
+The protocols came in that order, and each shaped the language:
+- **TFTP:** the first target. Its C was written by hand, then the emitter
+  was built to reproduce it.
+- **PCP:** bitfields, constant and reserved fields, fixed arrays, length
+  fields, padding, the `_` fallback arm, `const`, `max`, and the size
+  constants.
+- **NTP and STUN:** signed integers, `S[len]`, and field padding (which
+  replaced `pad(n)`). Neither needed an escape hatch.
+
+## Roadmap
+
+**Toward 1.0.** 1.0 will promise stability for the schema language, the
+generated C API (names, signatures, statuses, constants) and the command
+line; the formatting of generated code and its internal helpers are not
+covered. Until then, 0.x releases may break any of them. Tag 1.0 when:
+- CI has settled which compilers are supported;
+- a protocol outside the design set works without breaking changes:
+  - DNS: element counts, name compression, and so the first real escape
+    hatch;
+  - or DHCP: options that end at an END code, inside a fixed-size BOOTP
+    header;
+- someone other than the author has written a schema with it.
+
+**Smaller items:**
+- `INVALID` does not say which field failed, which makes bad packets
+  hard to debug.
+- The fuzz harness can report a false failure when an `S[len]` length
+  overflows while the message stays under its `MAX_SIZE`. This cannot
+  happen in the examples.
+- Possible additions, each only if someone needs it:
+  - scatter-gather encoding;
+  - `INCOMPLETE` for stream protocols (see "Generated C");
+  - a pip package, which first needs the modules moved into a `pktc/`
+    package;
+  - a native executable built with PyInstaller.
